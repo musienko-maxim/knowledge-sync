@@ -1,0 +1,19 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+data/*.db*
+data/*.sqlite*
+coverage/
+/auth/
+playwright/.auth/
+*storage-state*.json
+*.tmp
+*.log
+.tmp/
+# Defensive only: OAuth credentials and refresh tokens belong outside the repository.
+google-client-secret.json
+client_secret*.json
+youtube-oauth.json
+.youtube-oauth-*.tmp
