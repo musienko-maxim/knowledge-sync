@@ -7,6 +7,10 @@ Work only on the explicitly assigned task. Do not automatically proceed to the n
 Task specifications live in `docs/tasks/`. Task-specific requirements and scope
 restrictions belong in those specifications; the rules below apply repository-wide.
 
+Before starting work, read `docs/SESSION_HANDOFF.md` for the current implementation
+state and recent verification results. Treat it as status context, not as a
+replacement for the explicitly assigned task specification.
+
 ---
 
 # Project Context
