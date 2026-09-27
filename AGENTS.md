@@ -1,15 +1,37 @@
 # Repository Instructions
 
 ## Task Scope
-
+You are a key participant in the development process. Your comments and suggestions are very important to me. You are free to disagree, debate, and express your opinion; your point of view matters to us.
 Work only on the explicitly assigned task. Do not automatically proceed to the next task.
 
-Task specifications live in `docs/tasks/`. Task-specific requirements and scope
-restrictions belong in those specifications; the rules below apply repository-wide.
+Read the exact task file named by the user; do not select a task by number alone.
+`docs/tasks/` is the conventional location, but current task files may be at the
+repository root. Task-specific requirements and scope restrictions belong in
+those specifications; the rules below apply repository-wide.
 
 Before starting work, read `docs/SESSION_HANDOFF.md` for the current implementation
 state and recent verification results. Treat it as status context, not as a
 replacement for the explicitly assigned task specification.
+
+## Sub-agents and repository skills
+
+Use [the agent workflow](docs/AGENT_WORKFLOW.md) for delegation and skill selection.
+For a substantial assigned task with independent investigation or review work,
+delegate those bounded parts to the repository roles. Keep small, tightly coupled
+edits with one agent; do not spawn every role by default.
+
+The main agent coordinates scope, file ownership, integration, and final checks.
+Use `ks_explorer` for read-only investigation, `ks_implementer` for assigned edits,
+and `ks_reviewer` for independent read-only review. Limit the team to the main
+agent plus three concurrent children, or fewer if the environment permits fewer.
+Children do not recursively delegate. Never assign overlapping writers.
+
+Repository skills live in `.agents/skills/`: `ks-persistence`, `ks-youtube-auth`,
+and `ks-verify`. Read only the skills relevant to the assigned work. If the client
+does not expose custom roles or skills, read their linked files and include the
+relevant instructions in an ordinary delegation, or work sequentially.
+These instructions authorize delegation within the current task, not new tasks,
+commits, pushes, or changes to application architecture.
 
 ---
 
@@ -197,9 +219,9 @@ Enforce uniqueness for:
 
 Do not over-design the schema.
 
-The SQLite database is synchronization state only.
-
-It is not the knowledge repository.
+Task 004 extends SQLite to store normalized `KnowledgeItem` objects alongside
+separate synchronization/import state. Persisting an item does not mark it as
+imported or exported. Obsidian remains the planned user-facing knowledge repository.
 
 The SQLite database must not be stored inside the Obsidian Vault.
 
@@ -412,7 +434,7 @@ Follow these rules:
 
 1. Keep source-specific code inside `collectors`.
 2. Core domain code must not depend on YouTube or Facebook APIs.
-3. SQLite stores synchronization state only.
+3. SQLite stores normalized items and separate synchronization state; item persistence does not record an import.
 4. Obsidian Markdown is the future user-facing knowledge output.
 5. Git is outside the responsibility of this application.
 6. Synchronization is currently manual and infrequent.

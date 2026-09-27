@@ -8,9 +8,10 @@ into an existing Obsidian Vault. Synchronization will be manual and infrequent.
 Task 001 established the domain model, collector and output interfaces, SQLite
 synchronization state, and CLI help. Task 002 adds a YouTube playlist collector
 that returns validated `KnowledgeItem[]`. Task 003 adds Google Desktop OAuth,
-local authorization commands, and discovery of owned playlists. Video collection
-is available in code; CLI synchronization, storage orchestration, and Markdown
-generation remain deferred.
+local authorization commands, and discovery of owned playlists. Task 004 adds a
+SQLite-backed repository for normalized `KnowledgeItem` objects, separate from
+import state. Collection and persistence are available in code; connecting them,
+CLI synchronization, Markdown generation, and Obsidian output remain deferred.
 
 ## Development
 
@@ -41,8 +42,8 @@ Environment loading and path validation will be wired when a real command needs
 them. The storage factory currently accepts an explicit database path.
 
 `YOUTUBE_API_KEY` is also documented in `.env.example`. Task 002's API client takes
-the key explicitly; it does not read `.env` or environment variables. See
-[architecture and collector usage](docs/architecture.md) for the code-level entry point.
+the key explicitly; it does not read `.env` or environment variables. See the
+[Architecture](#architecture) section for the project structure and planned flow.
 
 ## YouTube account setup
 
@@ -97,15 +98,18 @@ of scope.
 user, following all API pages in order. The API's `mine=true` does not enumerate
 every playlist the user has viewed, followed, or saved. This command does not
 collect videos. Code-level account collection uses the same OAuth-authenticated
-client for discovery and item retrieval, including private playlists, and retains
-playlist grouping without cross-playlist deduplication.
+client for discovery and item retrieval and retains playlist grouping without
+cross-playlist deduplication. The OAuth-authenticated path is intended to support
+playlists accessible to the authorized account, including owned private playlists.
+OAuth collection passed a live smoke test, but the tested playlist's visibility
+was not verified; private-playlist access was not independently confirmed.
 
 ## Architecture
 
 Planned flow:
 
 ```text
-External Source → Collector → KnowledgeItem → SQLite synchronization state
+External Source → Collector → KnowledgeItem → SQLite items and import state
   → Markdown output → Local Obsidian Vault → Git managed separately
 ```
 
@@ -115,21 +119,32 @@ External Source → Collector → KnowledgeItem → SQLite synchronization state
   YouTube uses a replaceable API client with API-key or OAuth authentication,
   preserving playlist/item order. Account discovery has its own narrow interface.
 - `src/auth`: Desktop OAuth, external client configuration, and refresh-token storage.
-- `src/storage`: synchronous state interface, matching the local SQLite driver.
-  Drizzle maps the minimal table; bootstrap DDL initializes new databases.
-  A composite primary key `(source, sourceId)` identifies imports. Repeated imports
-  preserve the original URL and import time. Titles never determine identity.
+- `src/storage`: `KnowledgeItemRepository` exposes asynchronous `findByIdentity`
+  and `upsert` methods; the existing import-state interface stays synchronous.
+  `openStorage(path).knowledgeItems` shares the same SQLite/Drizzle connection
+  and `close()` lifecycle as import-state operations. Both `knowledge_items` and
+  `imported_items` enforce `PRIMARY KEY (source, source_id)`. Item upserts replace
+  normalized fields; repeated imports preserve the original URL and import time.
+  Titles never determine identity.
 - `src/outputs`: asynchronous output contract and reserved Obsidian directory.
   Future rendering must be deterministic and preserve original import timestamps.
 - `src/cli`: Commander factory separated from the executable for testing.
 
-SQLite is synchronization metadata only. Markdown in the vault will be the
-user-facing knowledge repository. Record successful imports only after output
-has been written; orchestration is deferred. Git remains independently managed.
+SQLite stores normalized items separately from synchronization metadata.
+Optional domain fields use SQL NULL and are omitted on reads; empty text stays
+empty and publication dates retain their original ISO string. Upserts insert or
+replace the mutable fields for one identity, without adding timestamps or import
+records. Additive `CREATE TABLE IF NOT EXISTS` bootstrap DDL also opens older
+import-only databases without changing their records; no data migration is needed.
+
+Markdown in the vault will be the user-facing knowledge repository. Record
+successful imports only after output has been written; orchestration is deferred.
+Git remains independently managed.
 
 ## MVP direction and scope
 
-The MVP direction is (only collection and normalization are implemented):
+The MVP direction is (collection, normalization, and persistence are implemented
+as independent capabilities; orchestration and output are deferred):
 
 ```text
 YouTube Playlist → KnowledgeItem → SQLite → Markdown → Obsidian
@@ -143,10 +158,4 @@ calls it sequentially and preserves per-playlist groups. The singular `collectio
 field still contains a playlist title; multi-playlist domain membership is not
 modeled yet.
 
-Task specifications live in `docs/tasks/`:
-
-- [Task 001 — Project Bootstrap](docs/tasks/TASK-001-bootstrap.md)
-- [Task 002 — YouTube Playlist Collector](docs/tasks/TASK-002-youtube-collector.md)
-- [Task 003 — YouTube Account Access](docs/tasks/TASK-003-youtube-account-access.md)
-
-Work stops at Task 003 for review.
+Work stops at Task 004 persistence for review.

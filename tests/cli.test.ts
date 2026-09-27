@@ -77,12 +77,15 @@ describe('YouTube CLI commands', () => {
     'Google Desktop credentials file is missing.',
     'Invalid Google credentials: expected an installed Desktop app.',
     'No locally stored YouTube authorization. Run `knowledge-sync youtube auth login`.',
-    'Stored YouTube authorization is invalid, expired, or could not be refreshed. Run `knowledge-sync youtube auth login`.',
+    'Stored YouTube authorization is no longer valid (HTTP 400, invalid_grant). Run `knowledge-sync youtube auth login`.',
+    'YouTube access-token refresh failed due to a network/transport error (EAI_AGAIN). Check connectivity and retry later.',
+    'Google access-token refresh temporarily failed (HTTP 503). Retry later.',
   ])('reports non-zero status safely: %s', async (message) => {
     const { commands, program, errors } = setupCommands();
-    commands.status.mockRejectedValue(new GoogleAuthError(message));
+    commands.status.mockRejectedValue(new GoogleAuthError(message, { cause: new Error('fake-refresh fake-client-secret') }));
     await expect(program.parseAsync(['youtube', 'auth', 'status'], { from: 'user' })).rejects.toMatchObject({ exitCode: 1 });
     expect(errors()).toContain(message);
+    expect(errors()).not.toContain('fake-');
   });
 
   it.each(['login', 'logout'])('returns a failure exit code for failed %s without exposing lower-level errors', async (command) => {
