@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
-import { OAuth2Client } from 'google-auth-library';
+import { gaxios, OAuth2Client } from 'google-auth-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAccessTokenProvider, GoogleOAuth, youtubeReadonlyScope } from '../src/auth/google-oauth.js';
+import { GoogleAuthError } from '../src/auth/google-client-config.js';
 import type { TokenStore } from '../src/auth/token-store.js';
 
 const config = { client_id: 'fake-client-id', client_secret: 'fake-client-secret' };
@@ -183,14 +184,94 @@ describe('Google access-token provider', () => {
     expect(client.credentials.refresh_token).toBe('fake-replacement-refresh');
   });
 
-  it.each(['invalid_grant', 'revoked', 'expired', 'network'])('maps %s failures to a safe re-login message', async () => {
+  function refreshError(status?: number, data?: unknown, cause?: unknown) {
+    const options: gaxios.GaxiosOptionsPrepared = {
+      url: new URL('https://oauth2.googleapis.com/token'), headers: new Headers(), responseType: 'json',
+    };
+    const response = status === undefined ? undefined
+      : Object.assign(new Response(null, { status }), { data, config: options });
+    return new gaxios.GaxiosError('fake-refresh fake-client-secret', options, response, cause);
+  }
+
+  async function failedRefresh(original: unknown) {
+    const store = memoryStore();
     const client = new OAuth2Client();
-    client.getAccessToken = vi.fn(async () => { throw new Error('fake-refresh https://example.invalid/?client_secret=fake-secret'); });
-    const provider = createAccessTokenProvider(config, memoryStore(), () => client);
+    // Exercise getAccessToken/refreshAccessToken with the real library and a mocked transport.
+    const request = vi.spyOn(client.transporter, 'request').mockRejectedValue(original);
+    const provider = createAccessTokenProvider(config, store, () => client);
     const error = await provider().catch((e: unknown) => e);
-    expect((error as Error).message).toContain('knowledge-sync youtube auth login');
+    expect(error).toBeInstanceOf(GoogleAuthError);
+    expect((error as Error).cause).toBe(original);
     expect((error as Error).message).not.toContain('fake-');
-    expect((error as Error).cause).toBeUndefined();
+    expect(await store.loadRefreshToken()).toBe('fake-existing-refresh');
+    expect(store.saveRefreshToken).not.toHaveBeenCalled();
+    expect(store.deleteRefreshToken).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledTimes(1);
+    return { error: error as GoogleAuthError, provider, request, store };
+  }
+
+  it('classifies invalid_grant as invalid authorization with re-login guidance', async () => {
+    const { error } = await failedRefresh(refreshError(400, {
+      error: 'invalid_grant', error_description: 'Token has been expired or revoked. fake-refresh',
+    }));
+    expect(error.message).toContain('authorization is no longer valid');
+    expect(error.message).toContain('invalid_grant');
+    expect(error.message).toContain('knowledge-sync youtube auth login');
+  });
+
+  it.each(['EAI_AGAIN', 'ECONNRESET', 'ETIMEDOUT', 'ENETUNREACH', 'ECONNREFUSED', 'ENOTFOUND', 'TimeoutError'])
+  ('preserves %s transport context without requiring login and permits a later refresh', async (code) => {
+    const transport = code === 'TimeoutError' ? new DOMException('Timed out', 'TimeoutError')
+      : Object.assign(new Error('fake-refresh transport failure'), { code });
+    const original = refreshError(undefined, undefined, transport);
+    const { error, provider, request, store } = await failedRefresh(original);
+    expect(error.message).toContain(code);
+    expect(error.message).toContain('Check connectivity and retry later');
+    expect(error.message).not.toMatch(/expired|no longer valid|auth login/);
+    expect((error.cause as gaxios.GaxiosError).cause).toBe(transport);
+    request.mockResolvedValue({ data: { access_token: 'fake-recovered', expires_in: 3600 } } as never);
+    expect(await provider()).toBe('fake-recovered');
+    expect(store.saveRefreshToken).not.toHaveBeenCalled();
+    expect(store.deleteRefreshToken).not.toHaveBeenCalled();
+  });
+
+  it('recognizes a transport code nested under a fetch error', async () => {
+    const transport = Object.assign(new Error('DNS lookup failed'), { code: 'EAI_AGAIN' });
+    const original = refreshError(undefined, undefined, new TypeError('fetch failed', { cause: transport }));
+    const { error } = await failedRefresh(original);
+    expect(error.message).toContain('network/transport error (EAI_AGAIN)');
+    expect(error.message).not.toContain('auth login');
+  });
+
+  it.each([500, 503, 429, 408])('reports HTTP %s as transient with status and retry guidance', async (status) => {
+    const { error } = await failedRefresh(refreshError(status, 'fake-secret server response'));
+    expect(error.message).toContain(`HTTP ${status}`);
+    expect(error.message).toContain('Retry later');
+    expect(error.message).not.toMatch(/expired|no longer valid|auth login/);
+  });
+
+  it.each(['server_error', 'temporarily_unavailable'])('recognizes OAuth %s as transient', async (code) => {
+    const { error } = await failedRefresh(refreshError(400, { error: code }));
+    expect(error.message).toContain(code);
+    expect(error.message).toContain('Retry later');
+    expect(error.message).not.toContain('auth login');
+  });
+
+  it('preserves other OAuth codes without blaming the refresh token', async () => {
+    const { error } = await failedRefresh(refreshError(401, { error: 'invalid_client' }));
+    expect(error.message).toContain('HTTP 401, invalid_client');
+    expect(error.message).toContain('Google OAuth configuration');
+    expect(error.message).not.toMatch(/invalid_grant|expired|no longer valid|auth login/);
+  });
+
+  it.each([
+    new Error('fake-refresh https://example.invalid/?client_secret=fake-secret'),
+    refreshError(400, { error: 'fake-secret unknown OAuth error' }),
+    null,
+  ])('preserves unclassified failures as causes without exposing raw messages or recommending login', async (original) => {
+    const { error } = await failedRefresh(original);
+    expect(error.message).toContain('access-token refresh failed');
+    expect(error.message).not.toMatch(/invalid_grant|expired|no longer valid|auth login/);
   });
 
   it('rejects a blank access token', async () => {

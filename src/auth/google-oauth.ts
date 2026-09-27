@@ -112,6 +112,49 @@ export class GoogleOAuth {
   }
 }
 
+function refreshFailure(cause: unknown): GoogleAuthError {
+  // Gaxios exposes OAuth response data/status and wraps transport errors in cause.
+  const failure = (cause !== null && typeof cause === 'object' ? cause : {}) as {
+    response?: { status?: unknown; data?: unknown };
+    status?: unknown;
+  };
+  const rawStatus = failure.response?.status ?? failure.status;
+  const status = typeof rawStatus === 'number' && Number.isInteger(rawStatus)
+    && rawStatus >= 100 && rawStatus <= 599 ? rawStatus : undefined;
+  const data = failure.response?.data;
+  const oauthCode = data !== null && typeof data === 'object' && 'error' in data ? data.error : undefined;
+  // Only known codes and HTTP status enter CLI output; arbitrary messages/bodies
+  // can contain credentials. Keep the full original error in cause for diagnosis.
+  const knownCode = typeof oauthCode === 'string' && [
+    'invalid_grant', 'invalid_client', 'invalid_request', 'unauthorized_client',
+    'invalid_scope', 'unsupported_grant_type', 'access_denied', 'server_error', 'temporarily_unavailable',
+  ].includes(oauthCode) ? oauthCode : undefined;
+  const details = [status ? `HTTP ${status}` : '', knownCode].filter(Boolean).join(', ');
+  const context = details ? ` (${details})` : '';
+
+  if ((status !== undefined && (status >= 500 || status === 429 || status === 408))
+    || knownCode === 'server_error' || knownCode === 'temporarily_unavailable') {
+    return new GoogleAuthError(`Google access-token refresh temporarily failed${context}. Retry later.`, { cause });
+  }
+  if (knownCode === 'invalid_grant') {
+    return new GoogleAuthError(`Stored YouTube authorization is no longer valid${context}. ${loginInstruction}`, { cause });
+  }
+  const seen = new Set<object>();
+  let transport: unknown = cause;
+  while (transport !== null && typeof transport === 'object' && !seen.has(transport)) {
+    seen.add(transport);
+    const { code, cause: inner } = transport as { code?: unknown; cause?: unknown };
+    if (typeof code === 'string' && [
+      'EAI_AGAIN', 'ECONNRESET', 'ETIMEDOUT', 'ENETUNREACH', 'ECONNREFUSED',
+      'ENOTFOUND', 'EHOSTUNREACH', 'EPIPE', 'TimeoutError', 'AbortError',
+    ].includes(code)) {
+      return new GoogleAuthError(`YouTube access-token refresh failed due to a network/transport error (${code}). Check connectivity and retry later.`, { cause });
+    }
+    transport = inner;
+  }
+  return new GoogleAuthError(`YouTube access-token refresh failed${context}. Check connectivity and Google OAuth configuration.`, { cause });
+}
+
 /** The library caches access tokens in memory and refreshes them when necessary. */
 export function createAccessTokenProvider(
   config: GoogleClientConfig,
@@ -131,8 +174,8 @@ export function createAccessTokenProvider(
       });
     }
     let token: string | null | undefined;
-    try { token = (await client.getAccessToken()).token; } catch {
-      throw new GoogleAuthError(`Stored YouTube authorization is invalid, expired, or could not be refreshed. ${loginInstruction}`);
+    try { token = (await client.getAccessToken()).token; } catch (cause) {
+      throw refreshFailure(cause);
     }
     if (!token?.trim()) throw new GoogleAuthError(`Google returned no access token. ${loginInstruction}`);
     if (replacement) {
