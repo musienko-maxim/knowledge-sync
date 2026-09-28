@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
+import { gaxios, OAuth2Client } from 'google-auth-library';
+import { GoogleAuthError } from '../src/auth/google-client-config.js';
+import { createAccessTokenProvider } from '../src/auth/google-oauth.js';
 import { YouTubeApiClient } from '../src/collectors/youtube/youtube-client.js';
 import { YouTubeCollector } from '../src/collectors/youtube/youtube-collector.js';
+import { YouTubeError } from '../src/collectors/youtube/youtube-error.js';
 
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 
@@ -37,10 +41,79 @@ describe('YouTubeApiClient OAuth and account access', () => {
     };
     const fetcher = vi.fn<typeof fetch>();
     const error = await new YouTubeApiClient({ kind: 'oauth', getAccessToken }, fetcher).getPlaylist('PLone').catch((e: unknown) => e);
-    expect((error as Error).message).toContain('knowledge-sync youtube auth login');
+    expect(error).toBeInstanceOf(YouTubeError);
+    expect((error as Error).message).toContain('access token is unavailable');
+    expect((error as Error).message).not.toContain('auth login');
     expect((error as Error).message).not.toContain('fake-');
     expect((error as Error).cause).toBeUndefined();
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  describe.each([0, 2])('OAuth failure after %i successful requests', (successfulRequests) => {
+    it.each([
+      { name: 'invalid_grant', status: 400, code: 'invalid_grant', transport: undefined, hint: 'authorization is no longer valid', login: true },
+      { name: 'network', status: undefined, code: undefined, transport: 'ECONNRESET', hint: 'network/transport error (ECONNRESET)', login: false },
+      ...[500, 503, 408, 429].map((status) => ({ name: `HTTP ${status}`, status, code: undefined, transport: undefined,
+        hint: `temporarily failed (HTTP ${status})`, login: false })),
+      { name: 'unknown', status: 400, code: 'fake-secret-unknown', transport: undefined, hint: 'access-token refresh failed (HTTP 400)', login: false },
+    ])('preserves the provider classification for $name through collection', async ({ status, code, transport, hint, login }) => {
+      const options: gaxios.GaxiosOptionsPrepared = {
+        url: new URL('https://oauth2.googleapis.com/token'), headers: new Headers(), responseType: 'json',
+      };
+      const response = status === undefined ? undefined : Object.assign(new Response(null, { status }), {
+        data: { error: code, error_description: 'fake-secret-body' }, config: options,
+      });
+      const original = new gaxios.GaxiosError('fake-secret-message', options, response,
+        transport ? Object.assign(new Error('fake-secret-cause'), { code: transport }) : undefined);
+      const oauth = new OAuth2Client();
+      const request = vi.spyOn(oauth.transporter, 'request');
+      for (let index = 0; index < successfulRequests; index++) {
+        // A short-lived token forces the real library to refresh before each next request.
+        request.mockResolvedValueOnce({ data: { access_token: 'fake-access', expires_in: 1 } } as never);
+      }
+      request.mockRejectedValue(original);
+      const store = {
+        loadRefreshToken: vi.fn(async () => 'fake-refresh'),
+        saveRefreshToken: vi.fn(async () => {}),
+        deleteRefreshToken: vi.fn(async () => true),
+      };
+      const provider = createAccessTokenProvider({ client_id: 'fake-client', client_secret: 'fake-secret' }, store, () => oauth);
+      let classified: unknown;
+      const getAccessToken = async () => {
+        try { return await provider(); } catch (error) { classified = error; throw error; }
+      };
+      const fetcher = vi.fn<typeof fetch>()
+        .mockResolvedValueOnce(json({ items: [{ snippet: { title: 'Learning' } }] }))
+        .mockResolvedValueOnce(json({ items: [], nextPageToken: 'next' }));
+      const collector = new YouTubeCollector(new YouTubeApiClient({ kind: 'oauth', getAccessToken }, fetcher), 'PLone');
+      const error = await collector.collect().catch((failure: unknown) => failure);
+      expect(error).toBeInstanceOf(GoogleAuthError);
+      expect(error).toBe(classified);
+      expect((error as Error).cause).toBe(original);
+      expect((error as Error).message).toContain(hint);
+      expect((error as Error).message.includes('auth login')).toBe(login);
+      expect((error as Error).message).not.toContain('fake-');
+      expect(fetcher).toHaveBeenCalledTimes(successfulRequests);
+      expect(request).toHaveBeenCalledTimes(successfulRequests + 1);
+      expect(store.saveRefreshToken).not.toHaveBeenCalled();
+      expect(store.deleteRefreshToken).not.toHaveBeenCalled();
+    });
+
+    it('sanitizes unclassified provider exceptions without requiring login', async () => {
+      const getAccessToken = vi.fn<() => Promise<string>>();
+      for (let index = 0; index < successfulRequests; index++) getAccessToken.mockResolvedValueOnce('fake-access');
+      getAccessToken.mockRejectedValue(new Error('fake-secret-message', { cause: new Error('fake-secret-cause') }));
+      const fetcher = vi.fn<typeof fetch>()
+        .mockResolvedValueOnce(json({ items: [{ snippet: { title: 'Learning' } }] }))
+        .mockResolvedValueOnce(json({ items: [], nextPageToken: 'next' }));
+      const error = await new YouTubeCollector(new YouTubeApiClient({ kind: 'oauth', getAccessToken }, fetcher), 'PLone')
+        .collect().catch((failure: unknown) => failure);
+      expect(error).toBeInstanceOf(YouTubeError);
+      expect((error as Error).message).toContain('access token is unavailable');
+      expect((error as Error).message).not.toMatch(/fake-|auth login/);
+      expect((error as Error).cause).toBeUndefined();
+      expect(fetcher).toHaveBeenCalledTimes(successfulRequests);
+    });
   });
 
   it.each([
@@ -121,7 +194,7 @@ describe('YouTubeApiClient', () => {
   ])('reports HTTP %i and API reason %s with playlist context', async (status, reason, hint) => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(json({ error: { errors: [{ reason }] } }, status));
     const error = await new YouTubeApiClient('test-key', fetcher).listPlaylistItems('PL123').catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(Error);
+    expect(error).toBeInstanceOf(YouTubeError);
     expect((error as Error).message).toContain(`playlist PL123: HTTP ${status} (${reason})`);
     expect((error as Error).message).toContain(hint);
   });
@@ -135,12 +208,15 @@ describe('YouTubeApiClient', () => {
     expect((error as Error).cause).toBeUndefined();
   });
 
-  it('redacts the API key if returned in an API error reason', async () => {
+  it('hides arbitrary API response content including credentials other than its own key', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(json({
-      error: { errors: [{ reason: 'bad secret-key' }] },
+      error: { message: 'fake-refresh-token', errors: [{ reason: 'bad secret-key' }, { reason: 'fake-client-secret' }] },
     }, 400));
-    await expect(new YouTubeApiClient('secret-key', fetcher).getPlaylist('PL123'))
-      .rejects.toThrow('bad [redacted]');
+    const error = await new YouTubeApiClient('secret-key', fetcher).getPlaylist('PL123').catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(YouTubeError);
+    expect((error as Error).message).toContain('playlist PL123: HTTP 400');
+    expect((error as Error).message).not.toMatch(/fake-|secret-key|bad /);
+    expect((error as Error).cause).toBeUndefined();
   });
 
   it.each([200, 503])('reports unreadable JSON with HTTP %i context', async (status) => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parsePlaylistId } from '../src/collectors/youtube/playlist-id.js';
+import { YouTubeError } from '../src/collectors/youtube/youtube-error.js';
 
 describe('YouTube playlist input', () => {
   it.each([
@@ -23,5 +24,6 @@ describe('YouTube playlist input', () => {
     'www.youtube.com/playlist?list=PL123', 'not a playlist',
   ])('rejects %j', (input) => {
     expect(() => parsePlaylistId(input)).toThrow(/YouTube/);
+    expect(() => parsePlaylistId(input)).toThrow(YouTubeError);
   });
 });

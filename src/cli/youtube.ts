@@ -3,16 +3,19 @@ import { createAccessTokenProvider, GoogleOAuth } from '../auth/google-oauth.js'
 import { FileTokenStore } from '../auth/token-store.js';
 import { YouTubeAccount } from '../collectors/youtube/youtube-account.js';
 import { YouTubeApiClient, type YouTubePlaylistSummary } from '../collectors/youtube/youtube-client.js';
+import { syncYouTubePlaylist } from './youtube-sync.js';
 
 export interface YouTubeCommands {
   login(showConsentUrl: (url: string) => void): Promise<void>;
   status(): Promise<void>;
   logout(): Promise<void>;
   playlists(): Promise<YouTubePlaylistSummary[]>;
+  sync: typeof syncYouTubePlaylist;
 }
 
 /** Configuration and token files are accessed only when a command is invoked. */
 export const youtubeCommands: YouTubeCommands = {
+  sync: syncYouTubePlaylist,
   async login(showConsentUrl) {
     const paths = googleConfigPaths();
     const config = await loadGoogleClientConfig(paths.credentialsFile);

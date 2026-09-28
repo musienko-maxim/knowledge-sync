@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Collector } from '../src/collectors/collector.js';
 import { YouTubeCollector } from '../src/collectors/youtube/youtube-collector.js';
 import type { YouTubeClient, YouTubePlaylistItem } from '../src/collectors/youtube/youtube-client.js';
+import { YouTubeError } from '../src/collectors/youtube/youtube-error.js';
 
 function video(id: string): YouTubePlaylistItem {
   return { snippet: { title: `Video ${id}` }, contentDetails: { videoId: id } };
@@ -92,9 +93,13 @@ describe('YouTubeCollector', () => {
   it('uses the domain schema to reject invalid normalized metadata', async () => {
     const client = fakeClient();
     client.listPlaylistItems.mockResolvedValue({ items: [{
-      ...video('a'), contentDetails: { videoId: 'a', videoPublishedAt: 'yesterday' },
+      ...video('a'), contentDetails: { videoId: 'fake-secret-id', videoPublishedAt: 'fake-secret-metadata' },
     }] });
-    await expect(new YouTubeCollector(client, 'PL123').collect()).rejects.toThrow('Invalid YouTube video metadata for a');
+    const error = await new YouTubeCollector(client, 'PL123').collect().catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(YouTubeError);
+    expect((error as Error).message).toBe('Invalid YouTube video metadata.');
+    expect((error as Error).message).not.toContain('fake-secret');
+    expect((error as Error).cause).toBeInstanceOf(Error);
   });
 
   it('returns an empty array for an accessible empty playlist', async () => {
