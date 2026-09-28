@@ -8,7 +8,7 @@ it('prints help without requiring configuration or opening storage', () => {
   const program = createProgram().configureOutput({ writeOut: (text) => { output += text; } }).exitOverride();
   expect(() => program.parse(['--help'], { from: 'user' })).toThrow(expect.objectContaining({ exitCode: 0 }));
   expect(output).toContain('Usage: knowledge-sync');
-  expect(output).toMatch(/sync is not\s+implemented/);
+  expect(output).toMatch(/manual YouTube playlist sync to\s+SQLite/);
 });
 
 it('starts with no arguments and rejects unimplemented commands', () => {
@@ -25,6 +25,7 @@ function setupCommands() {
     status: vi.fn<YouTubeCommands['status']>().mockResolvedValue(undefined),
     logout: vi.fn<YouTubeCommands['logout']>().mockResolvedValue(undefined),
     playlists: vi.fn<YouTubeCommands['playlists']>().mockResolvedValue([{ id: 'PLone', title: 'One' }, { id: 'PLtwo', title: 'Two' }]),
+    sync: vi.fn<YouTubeCommands['sync']>().mockResolvedValue({ processed: 42, new: 10, changed: 4, unchanged: 28 }),
   };
   let output = '';
   let errors = '';
@@ -41,7 +42,7 @@ function setupCommands() {
 }
 
 describe('YouTube CLI commands', () => {
-  it.each([{ args: [] }, { args: ['--help'] }, { args: ['youtube', '--help'] }, { args: ['youtube', 'auth', '--help'] }])
+  it.each([{ args: [] }, { args: ['--help'] }, { args: ['youtube', '--help'] }, { args: ['youtube', 'auth', '--help'] }, { args: ['youtube', 'sync', '--help'] }])
   ('initializes and prints help without executing any OAuth/file operations ($args)', async ({ args }) => {
     const { commands, program, output } = setupCommands();
     if (args.includes('--help')) {
@@ -54,8 +55,43 @@ describe('YouTube CLI commands', () => {
   it('exposes the required command tree', () => {
     const { program } = setupCommands();
     const youtube = program.commands.find((command) => command.name() === 'youtube')!;
-    expect(youtube.commands.map((command) => command.name())).toEqual(['auth', 'playlists']);
+    expect(youtube.commands.map((command) => command.name())).toEqual(['auth', 'playlists', 'sync']);
     expect(youtube.commands[0]!.commands.map((command) => command.name())).toEqual(['login', 'status', 'logout']);
+  });
+
+  it.each([
+    { args: ['PLone'], playlist: 'PLone', options: { auth: 'api-key' } },
+    { args: ['PLone', '--auth', 'api-key'], playlist: 'PLone', options: { auth: 'api-key' } },
+    { args: ['https://www.youtube.com/playlist?list=PLone', '--auth', 'oauth', '--db', 'my data/items.sqlite'],
+      playlist: 'https://www.youtube.com/playlist?list=PLone', options: { auth: 'oauth', db: 'my data/items.sqlite' } },
+  ])('routes sync input/options and prints only the processed count ($args)', async ({ args, playlist, options }) => {
+    const { program, commands, output, errors } = setupCommands();
+    await program.parseAsync(['youtube', 'sync', ...args], { from: 'user' });
+    expect(commands.sync).toHaveBeenCalledExactlyOnceWith(playlist, options);
+    expect(output()).toBe('Processed 42 items.\n');
+    expect(errors()).toBe('');
+    expect(commands.playlists).not.toHaveBeenCalled();
+    expect(commands.login).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [], ['PLone', 'PLtwo'], ['PLone', '--auth', 'automatic'],
+    ['PLone', '--auth'], ['PLone', '--db'], ['PLone', '--api-key', 'fake-secret'],
+  ])('rejects invalid sync arguments before execution (%j)', async (...args) => {
+    const { program, commands } = setupCommands();
+    await expect(program.parseAsync(['youtube', 'sync', ...args], { from: 'user' }))
+      .rejects.toMatchObject({ exitCode: 1 });
+    expect(commands.sync).not.toHaveBeenCalled();
+  });
+
+  it('does not print success or expose arbitrary sync errors', async () => {
+    const { program, commands, output, errors } = setupCommands();
+    commands.sync.mockRejectedValue(new Error('fake-access fake-client-secret'));
+    await expect(program.parseAsync(['youtube', 'sync', 'PLone'], { from: 'user' }))
+      .rejects.toMatchObject({ exitCode: 1 });
+    expect(output()).toBe('');
+    expect(errors()).toContain('YouTube command failed');
+    expect(errors()).not.toContain('fake-');
   });
 
   it('prints the consent URL and a token-free login success message', async () => {

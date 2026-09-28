@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { GoogleAuthError } from '../../auth/google-client-config.js';
+import { YouTubeError } from './youtube-error.js';
 
 // Only the external fields needed for collection are modeled here.
 const playlistItemSchema = z.object({
@@ -64,17 +66,17 @@ export class YouTubeApiClient implements YouTubeClient, YouTubeAccountClient {
     const auth = typeof authentication === 'string' ? { kind: 'api-key' as const, apiKey: authentication } : authentication;
     this.authentication = auth.kind === 'api-key' ? { kind: 'api-key', apiKey: auth.apiKey.trim() } : auth;
     if (this.authentication.kind === 'api-key' && !this.authentication.apiKey) {
-      throw new Error('A YouTube API key is required for public playlist access.');
+      throw new YouTubeError('A YouTube API key is required for public playlist access.');
     }
   }
 
   async listMyPlaylistsPage(pageToken?: string): Promise<YouTubePlaylistListPage> {
-    if (this.authentication.kind !== 'oauth') throw new Error('Owned playlist discovery requires OAuth authorization. Run `knowledge-sync youtube auth login`.');
+    if (this.authentication.kind !== 'oauth') throw new YouTubeError('Owned playlist discovery requires OAuth authorization. Run `knowledge-sync youtube auth login`.');
     const params: Record<string, string> = { part: 'snippet', mine: 'true', maxResults: '50' };
     if (pageToken) params.pageToken = pageToken;
     const data = await this.request('playlists', undefined, params);
     const parsed = accountResponseSchema.safeParse(data);
-    if (!parsed.success) throw new Error('Invalid YouTube owned playlists response.');
+    if (!parsed.success) throw new YouTubeError('Invalid YouTube owned playlists response.');
     return {
       items: parsed.data.items.map(({ id, snippet }) => ({ id, title: snippet.title })),
       nextPageToken: parsed.data.nextPageToken,
@@ -84,9 +86,9 @@ export class YouTubeApiClient implements YouTubeClient, YouTubeAccountClient {
   async getPlaylist(playlistId: string): Promise<{ title: string }> {
     const data = await this.request('playlists', playlistId, { part: 'snippet', id: playlistId });
     const parsed = playlistResponseSchema.safeParse(data);
-    if (!parsed.success) throw new Error(`Invalid YouTube playlist metadata response for ${playlistId}.`);
+    if (!parsed.success) throw new YouTubeError(`Invalid YouTube playlist metadata response for ${playlistId}.`);
     const playlist = parsed.data.items[0];
-    if (!playlist) throw new Error(`YouTube playlist ${playlistId} was not found or is inaccessible.`);
+    if (!playlist) throw new YouTubeError(`YouTube playlist ${playlistId} was not found or is inaccessible.`);
     return { title: playlist.snippet.title };
   }
 
@@ -97,7 +99,7 @@ export class YouTubeApiClient implements YouTubeClient, YouTubeAccountClient {
     if (pageToken) params.pageToken = pageToken;
     const data = await this.request('playlistItems', playlistId, params);
     const parsed = itemsResponseSchema.safeParse(data);
-    if (!parsed.success) throw new Error(`Invalid YouTube playlist items response for ${playlistId}.`);
+    if (!parsed.success) throw new YouTubeError(`Invalid YouTube playlist items response for ${playlistId}.`);
     return parsed.data;
   }
 
@@ -117,8 +119,9 @@ export class YouTubeApiClient implements YouTubeClient, YouTubeAccountClient {
       try {
         token = await auth.getAccessToken();
         if (!token?.trim()) throw new Error();
-      } catch {
-        throw new Error('YouTube OAuth authorization is unavailable. Run `knowledge-sync youtube auth login`.');
+      } catch (error) {
+        if (error instanceof GoogleAuthError) throw error;
+        throw new YouTubeError('YouTube OAuth access token is unavailable. Check connectivity and Google OAuth configuration.');
       }
       headers.Authorization = `Bearer ${token}`;
     }
@@ -130,36 +133,36 @@ export class YouTubeApiClient implements YouTubeClient, YouTubeAccountClient {
       response = await this.fetcher(url, { signal: AbortSignal.timeout(30_000), headers });
     } catch {
       // Fetch errors can include the request URL and therefore the API key.
-      throw new Error(`${context}: network request failed or timed out.`);
+      throw new YouTubeError(`${context}: network request failed or timed out.`);
     }
 
     let data: unknown;
     try {
       data = await response.json();
     } catch {
-      throw new Error(`${context}: HTTP ${response.status}, unreadable JSON response.`);
+      throw new YouTubeError(`${context}: HTTP ${response.status}, unreadable JSON response.`);
     }
     if (!response.ok) {
       const parsed = apiErrorSchema.safeParse(data);
       const rawReasons = parsed.success ? parsed.data.error.errors?.map(({ reason }) => reason) ?? [] : [];
-      // OAuth errors may echo credentials not known to this client. Emit only known reason codes.
-      const knownReasons = ['authError', 'invalidCredentials', 'unauthorized', 'quotaExceeded', 'dailyLimitExceeded',
+      // Either mode may echo credentials not known to this client. Emit only known reason codes.
+      const knownReasons = ['keyInvalid', 'authError', 'invalidCredentials', 'unauthorized', 'quotaExceeded', 'dailyLimitExceeded',
         'forbidden', 'insufficientPermissions', 'playlistItemsNotAccessible', 'playlistNotFound', 'backendError'];
-      const reasons = (auth.kind === 'oauth' ? rawReasons.filter((reason) => knownReasons.includes(reason)) : rawReasons).join(', ');
-      const detail = reasons ? ` (${auth.kind === 'api-key' ? reasons.replaceAll(auth.apiKey, '[redacted]') : reasons})` : '';
+      const reasons = rawReasons.filter((reason) => knownReasons.includes(reason)).join(', ');
+      const detail = reasons ? ` (${reasons})` : '';
       if (auth.kind === 'oauth') {
         const needsLogin = response.status === 401 || (response.status === 403
           && rawReasons.some((reason) => ['authError', 'invalidCredentials', 'unauthorized'].includes(reason)));
         const hint = needsLogin ? 'OAuth authorization failed. Run `knowledge-sync youtube auth login`.'
           : response.status === 403 ? 'API quota or playlist access denied; check quota, account ownership, and read-only permission.'
           : response.status === 404 ? 'Playlist not found or inaccessible.' : 'YouTube API request failed.';
-        throw new Error(`${context}: HTTP ${response.status}${detail}. ${hint}`);
+        throw new YouTubeError(`${context}: HTTP ${response.status}${detail}. ${hint}`);
       }
       const hint = response.status === 404 ? 'Playlist not found.'
         : response.status === 401 ? 'Invalid API credentials.'
         : response.status === 403 ? 'Playlist inaccessible or API access denied; check API key and quota.'
         : 'API request failed; check API key and request parameters.';
-      throw new Error(`${context}: HTTP ${response.status}${detail}. ${hint}`);
+      throw new YouTubeError(`${context}: HTTP ${response.status}${detail}. ${hint}`);
     }
     return data;
   }

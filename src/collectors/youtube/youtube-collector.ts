@@ -2,6 +2,7 @@ import { knowledgeItemSchema, type KnowledgeItem } from '../../core/models/knowl
 import type { Collector } from '../collector.js';
 import { parsePlaylistId } from './playlist-id.js';
 import type { YouTubeClient, YouTubePlaylistItem } from './youtube-client.js';
+import { YouTubeError } from './youtube-error.js';
 
 export class YouTubeCollector implements Collector {
   private readonly playlistId: string;
@@ -24,7 +25,7 @@ export class YouTubeCollector implements Collector {
       pageToken = page.nextPageToken;
       if (pageToken) {
         if (seenTokens.has(pageToken)) {
-          throw new Error(`YouTube playlist ${this.playlistId} returned a repeated page token.`);
+          throw new YouTubeError(`YouTube playlist ${this.playlistId} returned a repeated page token.`);
         }
         seenTokens.add(pageToken);
       }
@@ -50,7 +51,7 @@ function normalizeVideo(entry: YouTubePlaylistItem, collection: string): Knowled
     publishedAt: entry.contentDetails?.videoPublishedAt ?? undefined,
   });
   if (!result.success) {
-    throw new Error(`Invalid YouTube video metadata for ${videoId}: ${result.error.message}`);
+    throw new YouTubeError('Invalid YouTube video metadata.', { cause: result.error });
   }
   return result.data;
 }
