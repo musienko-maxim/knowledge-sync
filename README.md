@@ -2,7 +2,7 @@
 
 A local-first CLI for collecting saved knowledge and exporting Markdown directly
 into an existing Obsidian Vault. Synchronization is manual and infrequent;
-Markdown export remains planned.
+CLI-driven Markdown export remains planned.
 
 ## Current status
 
@@ -16,7 +16,13 @@ import state. Task 005 connects a collector to that repository through an intern
 sync to SQLite through `youtube sync <playlist>`, using API-key or OAuth access.
 Task 007 classifies each collected entry as new, changed, or unchanged against
 its current stored state, while continuing to upsert every entry.
-Import/export orchestration, Markdown generation, and Obsidian output remain deferred.
+Task 008 adds a pure, deterministic `KnowledgeItem` Markdown renderer.
+Task 009 adds a filesystem writer for already-rendered text at a caller-supplied
+path below an existing vault. The Task 010 path builder maps stable item identity
+to a relative note path. Task 011 composes these primitives to export one supplied
+item. Task 012 exports a supplied array sequentially, collecting individual
+failures and returning entry-based statistics. Sync/export orchestration,
+import recording, and CLI export remain deferred.
 
 ## Development
 
@@ -76,7 +82,101 @@ No import/export record is created by this command.
 OAuth refresh failures preserve re-login guidance for `invalid_grant`, retry
 guidance for network/transient failures, and safe diagnostics for unknown failures,
 including refreshes during pagination. Raw error bodies and credential-bearing
-causes are not printed. Account-wide synchronization and Markdown output remain deferred.
+causes are not printed. Account-wide synchronization and CLI Markdown export remain deferred.
+
+## Markdown rendering
+
+`renderKnowledgeItemMarkdown(item: KnowledgeItem): string` is exported from
+`src/outputs/markdown.ts`. It performs no I/O and does not mutate or revalidate
+the supplied item. It is independent of synchronization and the CLI.
+
+The document contains YAML front matter in this order: `source`, `sourceId`,
+`url`, `title`, `author`, `collection`, `publishedAt`. All values are double-quoted
+with deterministic escaping. Optional metadata is omitted only when undefined;
+empty author/collection strings remain explicit `""`. Publication dates retain
+their supplied representation. Description appears only in the body.
+
+After the closing front-matter delimiter and a blank line, the renderer prefixes
+the verbatim title with `# `. An absent description leaves the body as
+`# <title>\n`; an empty description produces `# <title>\n\n`. A present description
+follows that blank line unchanged. The renderer appends a final `\n` only if the
+assembled document does not already end with one.
+
+Generated separators use LF on every platform. Supplied title and description
+content retains whitespace, CRLF, trailing blank lines, and Markdown syntax.
+Consequently, the output need not be entirely LF, and arbitrary title content
+may produce more than one heading or other Markdown structures. This renderer
+does not sanitize Markdown or generate filenames, write files, or record imports.
+
+## Obsidian note writing
+
+`writeObsidianNote(vaultPath, relativePath, content): Promise<void>` is exported
+from `src/outputs/obsidian/write-note.ts`. The caller supplies final Markdown text
+and the destination path; the writer does not render, generate filenames, read
+configuration, or participate in sync. The existing `Output.write(item)` interface
+is unchanged.
+
+The vault must already exist and be a directory. Blank vault paths are rejected;
+relative vault paths resolve against the working directory. Destination paths
+must be relative and resolve strictly below the vault root. Empty/root-equivalent
+paths and traversal outside the vault are rejected before filesystem changes.
+Contained normalization such as `folder/../note.md` is allowed. Path rules are
+native to the host: Windows handles both separators and rejects rooted, drive-qualified
+(including `C:note.md`), and UNC destinations; POSIX keeps its native filename semantics.
+Otherwise valid path values are not trimmed or sanitized.
+
+Missing parent directories below the vault are created recursively. Existing
+files are overwritten completely with UTF-8 text, without adding a BOM or changing
+content, whitespace, Unicode normalization, or line endings. Repeated writes
+produce the same file content; filesystem errors propagate. Containment is lexical
+only, so symlinks are followed normally. Writes are not atomic and a failed write
+may leave a truncated or partially written file. The writer does not discover
+vaults, read configuration, or orchestrate batches; CLI export remains deferred.
+
+## Single-item Obsidian export
+
+[`exportObsidianNote(vaultPath, item): Promise<void>`](src/outputs/obsidian/export-note.ts)
+exports a supplied `KnowledgeItem` into an existing vault. It calls the existing
+path builder, then renderer, then awaits one writer call. Inputs, generated path,
+and Markdown content pass through unchanged; errors reject with the original
+failure. It reads no configuration or database and does not record an import.
+
+The pure [path builder](src/outputs/obsidian/note-path.ts) maps only `source` and
+`sourceId` to `<encoded-source>/<encoded-sourceId>.md`. Metadata changes do not
+move the note. Encoding protects identity distinctions on case-insensitive
+filesystems, escapes unsafe characters, and protects Windows device names.
+It does not truncate long identities, so native filesystem length limits can
+still cause an export to fail.
+
+Each call writes the item, including repeated unchanged items. Existing content
+is overwritten through the writer; this single-item function applies no
+incremental-export policy.
+The writer's lexical containment and non-atomic behavior still apply: failures
+can leave created directories or partial content. Sync and CLI commands do not
+invoke this function automatically.
+
+## Batch Obsidian export
+
+[`exportObsidianNotes(vaultPath, items): Promise<ObsidianBatchExportResult>`](src/outputs/obsidian/export-notes.ts)
+accepts `readonly KnowledgeItem[]` and awaits `exportObsidianNote()` once per
+entry in input order, including duplicates. An individual failure is captured
+and processing continues. The batch waits for the final entry to settle.
+
+The result contains `processed`, `succeeded`, `failed`, and `failures`. Each
+failure stores its zero-based `index`, original `item` reference, and unchanged
+`error: unknown`, in ascending input order. On normal completion,
+`processed === items.length`, `processed === succeeded + failed`, and
+`failed === failures.length`. No input array or item is mutated.
+
+Success means that entry's export call resolved; it does not count unique files
+or guarantee final file contents. A later duplicate may overwrite an earlier
+entry's note, and a failed non-atomic write can leave partial content. There is
+no deduplication, retry, rollback, or collision detection.
+
+Vault validation stays in the single-item pipeline. An invalid vault that fails
+every export produces one failure per entry. Empty input returns all-zero counts
+and an empty failures array without accessing the vault. The batch has no CLI,
+sync, configuration, or persistence integration.
 
 ## YouTube account setup
 
@@ -161,8 +261,11 @@ External Source → Collector → KnowledgeItem → SQLite items and import stat
   `imported_items` enforce `PRIMARY KEY (source, source_id)`. Item upserts replace
   normalized fields; repeated imports preserve the original URL and import time.
   Titles never determine identity.
-- `src/outputs`: asynchronous output contract and reserved Obsidian directory.
-  Future rendering must be deterministic and preserve original import timestamps.
+- `src/outputs`: pure Markdown renderer and asynchronous output contract;
+  `obsidian/note-path.ts` maps identity to a relative path, `write-note.ts` writes
+  supplied text, and `export-note.ts` composes them for one item. `export-notes.ts`
+  delegates sequentially with per-entry failure collection. These operations add
+  no timestamps or import metadata.
 - `src/cli`: Commander factory separated from the executable for testing;
   single-playlist composition owns authentication selection, database-path
   resolution, and storage cleanup around the existing application operation.
@@ -206,8 +309,10 @@ Git remains independently managed.
 
 ## MVP direction and scope
 
-The MVP direction is (collection, normalization, persistence, and manual
-single-playlist CLI synchronization are implemented; output is deferred):
+The MVP direction is (collection, normalization, persistence, manual
+single-playlist CLI synchronization, pure Markdown rendering, stable note paths,
+and single-item/batch filesystem export are implemented; sync/export
+orchestration is deferred):
 
 ```text
 YouTube Playlist → KnowledgeItem → SQLite → Markdown → Obsidian
@@ -222,4 +327,5 @@ field still contains a playlist title; syncing the same video from another playl
 overwrites that context, and omitted collection metadata clears it. Multi-playlist
 domain membership is not modeled yet.
 
-Work stops at Task 007 item classification during manual synchronization into SQLite.
+Work stops at Task 012 batch export. The sync command still only
+collects, classifies, and persists items into SQLite.

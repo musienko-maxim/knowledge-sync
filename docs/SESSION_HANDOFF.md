@@ -1,14 +1,16 @@
 # Project Session Handoff
 
-Updated: 2026-09-28
+Updated: 2026-10-02
 
-Latest checkpoint: [Tasks 005–007](sessions/2026-09-28-tasks-005-007-checkpoint.md).
+Latest checkpoint: [Tasks 008–012](sessions/2026-10-02-tasks-008-012-checkpoint.md).
+The [Tasks 005–007 checkpoint](sessions/2026-09-28-tasks-005-007-checkpoint.md)
+is historical; PR #3 has since been merged.
 The earlier [Task 004 checkpoint](sessions/2026-09-27-task-004-checkpoint.md)
 is a historical record; PR #2 has since been merged.
 
 ## Current state
 
-`knowledge-sync` has implementations for Tasks 001–007:
+`knowledge-sync` has implementations for Tasks 001–012:
 
 - Task 001: project foundation, domain model, SQLite synchronization state, output boundary, and CLI bootstrap.
 - Task 002: public YouTube playlist collector with URL/ID parsing, pagination, normalized `KnowledgeItem` output, and API-key access.
@@ -22,6 +24,17 @@ is a historical record; PR #2 has since been merged.
   selection, database-path resolution, and storage cleanup around that operation.
 - Task 007: application-level new/changed/unchanged classification against current
   persisted state, with sequential lookup/upsert and expanded result counters.
+- Task 008: pure deterministic Markdown rendering of a supplied `KnowledgeItem`,
+  independent of synchronization, filesystem writing, and Obsidian.
+- Task 009: standalone filesystem writer accepting an existing vault, a relative
+  destination path, and already-rendered text; independent of rendering and sync.
+- Task 010: existing pure identity-to-path mapping in `note-path.ts`, with tests
+  already present at Task 011 entry. No historical Task 010 completion/acceptance
+  record was available; fresh regression evidence is recorded below.
+- Task 011: single-item export composition of the existing path builder, renderer,
+  and writer, without sync, CLI, database, or import-state integration.
+- Task 012: sequential batch export through the single-item exporter, with
+  best-effort continuation, per-entry statistics, and original failure details.
 
 The working tree also contains the Task 003 refresh-error follow-up: invalid
 authorization, network failures, transient server failures, and unknown errors
@@ -32,10 +45,11 @@ Task 004 is described in the root `task-004.md`; its implementation is included
 in the `iteration/task-004-persistence` checkpoint branch.
 `docs/tasks/` is currently absent; use the exact task file named by the user.
 
-The implementation stops at manual single-playlist collection, classification,
-and persistence through the CLI. Account-wide synchronization, import/export orchestration,
-Markdown rendering, Obsidian writing, Facebook, AI, scheduling, background services,
-and Git automation remain unimplemented.
+The CLI stops at manual single-playlist collection, classification, and persistence.
+Separate Markdown rendering, stable note-path generation, filesystem writing, and
+single-item and batch export composition are available. Account-wide synchronization,
+sync/export and import-state orchestration, CLI export, Facebook, AI,
+scheduling, background services, and Git automation remain unimplemented.
 
 Task 005 was implemented according to the then-available `task-005.md`,
 prepared from `prompts/create-task-005.md`; neither file is currently present.
@@ -53,7 +67,89 @@ including accepted review clarifications on exact persisted strings, optional
 values, the current scalar-only model, and duplicate behavior. Existing Task
 005/006 work and unrelated changes were preserved. No commits or pushes were made.
 
+Task 008 is implemented according to the original `prompts/task-008.md` reviewed
+in this session and the accepted `prompts/task-008-updated.md` clarifications
+(that file is now absent).
+The original specification was replaced by that clarification file before
+implementation; its remaining requirements were retained from the session.
+`prompts/task-007.md` is also now locally deleted; the preceding link records its
+historical specification location. Pre-existing deletions were preserved.
+No commits or pushes were made during Task 008.
+
+Task 009 is implemented according to [prompts/task-009-updated.md](../prompts/task-009-updated.md),
+including the user's accepted path clarifications appended to that specification.
+Task 008 source/tests and unrelated pre-existing deletions were preserved.
+No commits or pushes were made during Task 009.
+
 ## Important architecture
+
+- `src/outputs/obsidian/export-notes.ts` exports
+  `exportObsidianNotes(vaultPath, items: readonly KnowledgeItem[])` returning
+  `Promise<ObsidianBatchExportResult>`, plus the result and failure interfaces.
+  It awaits `exportObsidianNote` for each entry in original order. Exceptions or
+  rejections from an entry are retained as `{ index, item, error }`, preserving
+  the original item reference and unknown error value, then processing continues.
+  Failures appear in ascending input-index order. The final result is returned
+  only after the last entry settles: `processed === succeeded + failed`,
+  `processed === items.length`, and `failed === failures.length`.
+- Counts describe export-call outcomes, including duplicate references and
+  different versions of the same identity. They do not guarantee distinct files
+  or preserved final content; later writes can overwrite or partially damage
+  earlier output. No retries, rollback, deduplication, concurrency, or global
+  vault validation are added. Empty input returns zeros without accessing the
+  vault; an invalid vault produces per-entry failures from the existing exporter.
+  The array and items are not mutated. Batch export has no sync, CLI, database,
+  import-state, or configuration integration.
+
+- `src/outputs/obsidian/export-note.ts` exports
+  `exportObsidianNote(vaultPath, item): Promise<void>`. It calls
+  `buildObsidianRelativePath(item)`, `renderKnowledgeItemMarkdown(item)`, and
+  `writeObsidianNote(vaultPath, relativePath, content)` in order, exactly once on
+  success. Inputs and outputs pass through unchanged. Synchronous component
+  exceptions become promise rejections with the original value; later steps are
+  skipped after failure. The promise settles only after the awaited writer.
+  There is no validation, configuration discovery, database access, import record,
+  retry, batch policy, or sync/CLI integration. `Output.write(item)` is unchanged.
+- The pre-existing Task 010 `buildObsidianRelativePath(item)` in `note-path.ts`
+  maps identity to `<encoded-source>/<encoded-sourceId>.md`, ignoring metadata.
+  It uses UTF-8 byte escapes for uppercase/non-ASCII/unsafe characters and trailing
+  spaces/periods, protects reserved device names, and rejects empty or malformed
+  Unicode identities. It performs no I/O and does not truncate; generated paths
+  can exceed native filesystem limits. Task 011 reuses it unchanged and inherits
+  writer failures and non-atomic behavior rather than providing rollback.
+
+- `src/outputs/obsidian/write-note.ts` exports
+  `writeObsidianNote(vaultPath, relativePath, content): Promise<void>`. It imports
+  only Node filesystem/path APIs, with no renderer, domain, sync, storage, CLI,
+  or configuration dependency. The existing `Output.write(item)` stays unchanged.
+- Blank vault paths are rejected; relative vault paths resolve against cwd.
+  Native path parsing rejects rooted/drive-qualified note paths (including Windows
+  `C:note.md`). Resolve/relative checks reject blank/root-equivalent destinations
+  and escapes before filesystem changes. Contained `folder/../note.md` is allowed.
+  Windows recognizes both separators; POSIX keeps native filename semantics.
+  Otherwise valid path values are not trimmed or sanitized.
+- The vault must already exist and be a directory, checked before recursive parent
+  creation. The writer overwrites the destination with unchanged UTF-8 text and
+  adds no BOM or newline. Native filesystem failures propagate unchanged; explicit
+  contract failures use plain errors. Containment is lexical only, symlinks are
+  followed normally, and writes are non-atomic: failure can leave partial content.
+  No export orchestration, filename generation, or import recording is added.
+
+- `src/outputs/markdown.ts` exports
+  `renderKnowledgeItemMarkdown(item: KnowledgeItem): string`. It imports only the
+  domain type and performs no I/O, validation, input mutation, or sync integration.
+- YAML front matter uses the fixed order `source`, `sourceId`, `url`, `title`,
+  `author`, `collection`, `publishedAt`. All values are double-quoted with JSON
+  escaping plus explicit escapes for remaining YAML control characters and Unicode
+  line separators. Undefined metadata is omitted; empty strings are serialized.
+  Dates retain their exact representation; description is body content only.
+- Rendering uses `---\n<metadata>\n---\n\n`, then `# ` plus the verbatim title.
+  Absent description yields the body `# <title>\n`; a present description yields
+  `# <title>\n\n<description>`. Append a final LF only if the assembled string
+  does not already end with LF. Empty description therefore ends in two LFs.
+  Generated separators use LF, while supplied CRLF, whitespace, Markdown, and
+  trailing blank lines remain untouched. Arbitrary title content is not guaranteed
+  to produce one literal Markdown heading. No new dependency or domain field is added.
 
 - `YouTubeCollector` remains dependent on the narrow `YouTubeClient` interface.
 - API-key and OAuth authentication are explicit modes of `YouTubeApiClient`.
@@ -113,6 +209,177 @@ values, the current scalar-only model, and duplicate behavior. Existing Task
   Credential-bearing error causes and arbitrary response details are not printed.
 
 ## Verification last completed
+
+Task 012 implementation validation (2026-10-02), using `ks-verify`, against
+[prompts/task-012.md](../prompts/task-012.md), including its appended success,
+invalid-vault, and additional-test requirements:
+
+- `npm.cmd install`: passed; dependencies up to date, none added.
+- `npm.cmd test -- tests/obsidian-export-notes.test.ts`: 19 passed in one file.
+- `npm.cmd test`: 530 passed, 1 intentional Windows skip for POSIX permissions,
+  21 files.
+- `npm.cmd run typecheck`: passed.
+- `npm.cmd run build`: passed.
+- `node dist/cli/index.js`: passed.
+- `node dist/cli/index.js --help`: passed.
+- `npm.cmd exec --offline --package=. -- knowledge-sync --help`: passed.
+
+Focused tests mock only the single-item exporter. They cover empty input even
+with invalid vault strings, one/multiple successes, unchanged forwarding and
+frozen input, duplicate references and different versions of the same identity,
+continuation after synchronous throws/asynchronous rejections, ordered failures,
+all-failed batches, original item/error references, and non-Error rejection values
+including null/undefined. Deferred promises verify strict sequencing after both
+success and failure and that the batch waits for the final entry in all four
+first/last success/failure combinations. No timers or new filesystem test matrix
+were needed; existing real single-item integration tests passed in the full suite.
+No real vault, account, or database was used.
+
+Files added: `src/outputs/obsidian/export-notes.ts` and
+`tests/obsidian-export-notes.test.ts`. Files changed: `README.md`,
+`src/outputs/obsidian/README.md`, and this handoff. The existing
+`src/{application,auth,cli,collectors,core,outputs,storage}`, `tests`, `data`,
+`docs`, and `prompts` layout is retained; `export-notes.ts` sits beside
+`export-note.ts`, `note-path.ts`, and `write-note.ts`.
+No dependencies or specification deviations. SHA-256 comparisons confirm
+pre-existing source/test files, package files, and the Task 012 specification
+are unchanged; the assigned Obsidian README is the only changed file among those
+baseline paths. Independent `ks_reviewer` inspection found no code or test issues.
+Final documentation and validation-evidence review also found no actionable issues.
+The `ks-verify` workflow passed, including `git diff --check`, new-file whitespace,
+Task 012 documentation references, directory structure, and baseline preservation.
+
+The working tree remains uncommitted: the two Task 012 files are new, the three
+documentation files are modified, and pre-existing changes/deletions remain.
+`prompts/task-012.md` was supplied before implementation and remains unchanged;
+`prompts/task-011.md` was already absent at Task 012 entry. No commits or pushes
+were made, and Task 013 was not started.
+
+### Historical Task 011 verification
+
+Task 011 implementation validation (2026-10-02), using `ks-verify`, against
+`prompts/task-011.md` (now absent; this records its historical location):
+
+- `npm.cmd install`: passed; dependencies up to date, none added.
+- `npm.cmd test -- tests/obsidian-export-note.test.ts tests/obsidian-export-note.integration.test.ts tests/obsidian-note-path.test.ts`:
+  155 passed in three files: 6 exporter unit cases, 3 exporter integration cases,
+  and 146 existing Task 010 path-builder cases.
+- `npm.cmd test`: 511 passed, 1 intentional Windows skip for POSIX permissions,
+  20 files.
+- `npm.cmd run typecheck`: passed.
+- `npm.cmd run build`: passed.
+- `node dist/cli/index.js`: passed.
+- `node dist/cli/index.js --help`: passed.
+- `npm.cmd exec --offline --package=. -- knowledge-sync --help`: passed.
+
+New tests verify exact call order/counts, original object and argument forwarding,
+path/renderer error short-circuiting, original writer rejection, and deferred
+writer fulfillment/rejection without sleeps. Real temporary-directory tests
+verify exact UTF-8 Markdown bytes, Unicode, generated source-directory creation,
+immutable input, a shorter metadata update at the same identity path, repeat
+output, and missing-vault failure. No real vault, account, or database was used.
+This is fresh Task 010 regression coverage during Task 011, not a reconstruction
+of earlier Task 010 validation or an assertion of historical acceptance.
+
+Task 011 files added:
+
+- `src/outputs/obsidian/export-note.ts`
+- `tests/obsidian-export-note.test.ts`
+- `tests/obsidian-export-note.integration.test.ts`
+
+Task 011 files changed: `README.md`, `src/outputs/obsidian/README.md`, and this
+handoff. Existing `src/{application,auth,cli,collectors,core,outputs,storage}`,
+`tests`, `data`, `docs`, and `prompts` directories remain; the Obsidian directory
+now contains `export-note.ts`, `note-path.ts`, `write-note.ts`, and its README.
+No dependencies or specification deviations. SHA-256 comparisons confirm all
+pre-existing source/test files, package files, and the Task 011 specification
+  are unchanged; only the assigned Obsidian README changed within those baseline
+paths. Existing user deletions and untracked Task 008–010 work were preserved.
+Independent `ks_reviewer` review found no implementation or test issues.
+The `ks-verify` checks above passed, as did `git diff --check`, new-file whitespace,
+new documentation references, and the directory-layout check.
+
+The working tree remains uncommitted: the three documentation files are modified,
+the three new Task 011 files are untracked, and the pre-existing deleted
+`instructions.txt`, `prompts/task-007.md`, `task-004.md`, untracked Task 008–010
+source/tests, and untracked `prompts/task-011.md` remain. No commits or pushes
+were made. Task 012 was not started.
+
+### Historical Task 009 verification
+
+Task 009 implementation validation (2026-09-28), using `ks-verify`:
+
+- `npm.cmd install`: passed; dependencies up to date, none added.
+- `npm.cmd test -- tests/obsidian-write-note.test.ts`: 50 passed, one file.
+- `npm.cmd test`: 356 passed, 1 intentional Windows skip for POSIX permissions,
+  17 files.
+- `npm.cmd run typecheck`: passed.
+- `npm.cmd run build`: passed.
+- `node dist/cli/index.js`: passed.
+- `node dist/cli/index.js --help`: passed.
+- `npm.cmd exec --offline --package=. -- knowledge-sync --help`: passed.
+
+Tests cover UTF-8 bytes and exact text (including supplied BOM, Unicode, mixed
+newlines, empty content, and absent final newline), recursive parents, complete
+overwrite, repeat writes, native path semantics, mandatory Windows drive-relative
+rejection, traversal/root equivalence, contained normalization, existing vault
+validation, and unchanged filesystem error propagation. All writer tests use
+temporary directories; unsafe-path tests guard filesystem mutations. No real vault,
+account, or database was used. POSIX-only native-name cases are included for a
+POSIX run but were not executed during this Windows validation.
+
+The first focused run found a test-only ESM namespace spying failure. A pass-through
+Vitest mock facade made the required filesystem spies configurable, and all 50
+tests then passed using real filesystem operations except injected failures/guards.
+
+Files added: `src/outputs/obsidian/write-note.ts`, `tests/obsidian-write-note.test.ts`.
+Files changed: `README.md`, `src/outputs/obsidian/README.md`, this handoff, and
+`prompts/task-009-updated.md` (accepted clarifications only).
+The existing `src/{application,auth,cli,collectors,core,outputs,storage}`, `tests`,
+`data`, `docs`, and `prompts` layout is retained. The Obsidian output directory now
+contains the standalone writer and its README. No dependencies, schema, renderer,
+storage, or sync/CLI behavior changed, and there are no specification deviations.
+Hashes of the Task 008 renderer/tests and package files match the Task 009 entry state.
+Independent `ks_reviewer` inspection found no implementation or test issues.
+Its documentation review found a duplicated accepted-clarification section in
+the task file; that duplicate was removed before completion.
+The reviewer confirmed no remaining findings. The `ks-verify` workflow passed,
+including final new-file whitespace, documentation reference, directory structure,
+and `git diff --check` validation. Unrelated pre-existing changes remain untouched.
+
+### Historical Task 008 verification
+
+Task 008 implementation validation (2026-09-28):
+
+- `npm.cmd install`: passed; dependencies up to date, none added.
+- `npm.cmd test -- tests/markdown.test.ts`: 43 passed, one file.
+- `npm.cmd test`: 306 passed, 1 intentional Windows skip for POSIX permissions,
+  16 files.
+- `npm.cmd run typecheck`: passed.
+- `npm.cmd run build`: passed.
+- `node dist/cli/index.js`: passed.
+- `node dist/cli/index.js --help`: passed.
+- `npm.cmd exec --offline --package=. -- knowledge-sync --help`: passed.
+
+The focused tests use explicit output assertions covering field order, quoting,
+Unicode/control characters, optional/empty metadata, exact publication dates,
+all amended description/newline cases, verbatim titles, deterministic output,
+and frozen input preservation. Full-suite checks use existing isolated SQLite
+and mocked transports; no real account, database, or vault was used.
+
+Files added: `src/outputs/markdown.ts`, `tests/markdown.test.ts`.
+Files changed: `README.md`, `src/outputs/obsidian/README.md`, this handoff.
+The existing directory layout is retained; `src/outputs` now includes the pure
+renderer alongside `output.ts` and the reserved `obsidian` writer directory.
+There are no changes to dependencies, domain/storage contracts, schema, sync,
+or CLI behavior, and no specification deviations. Independent `ks_reviewer`
+inspection of implementation, tests, documentation, and validation evidence found
+no actionable issues. The `ks-verify` workflow passed, including final whitespace,
+new documentation reference, and directory checks. The pre-existing local
+deletions of `instructions.txt`, `prompts/task-007.md`, and `task-004.md`, and the
+user-supplied untracked clarification file, were preserved.
+
+### Historical Task 007 verification
 
 Task 007 implementation validation (2026-09-28):
 
@@ -240,6 +507,19 @@ were changed. Unrelated pre-existing changes were checked against task-entry cop
 
 ## Current checkpoint and repository state
 
+The user authorized creating a PR on 2026-10-02. Fetching origin confirmed PR #3
+merged Tasks 005–007 into `origin/main` at `193e837`. Its tree matches the previous
+local Task 007 branch, so a fresh `iteration/task-012-obsidian-export` branch was
+created from that base without changing application files. It packages completed
+Tasks 008–012, their tests, the current Task 012 specification, and documentation.
+The unrelated local deletions of `instructions.txt`, `prompts/task-007.md`, and
+`task-004.md` are excluded. No missing historical task files were reconstructed.
+The latest checkpoint above contains the PR title, description, and validation.
+Check Git and the remote PR for final publication state; older no-commit/no-push
+statements describe implementation before this explicit authorization.
+
+### Historical Tasks 005–007 checkpoint
+
 The user authorized preparing a commit for PR and pushing on 2026-09-28.
 Fetching origin confirmed PR #2 merged Task 004 into `origin/main` at `5324ad2`.
 Branch `iteration/task-007-sync-classification` starts from that merge and
@@ -280,4 +560,11 @@ helpers, not application agents or automatic task execution.
 
 ## Next-session guidance
 
-Read this handoff and the explicitly assigned task specification before changing code. Task 007 sync item classification is complete; its Tasks 005–007 checkpoint branch is `iteration/task-007-sync-classification`. Check actual Git/PR state before further work. Work only on the assigned task and stop at its boundary. Do not start account-wide synchronization, import/export orchestration, Markdown/Obsidian output, or any later integration unless a new task explicitly requests it.
+Read this handoff and the explicitly assigned task specification before changing
+code. Task 012 batch export is complete. The Tasks 008–012 checkpoint branch is
+`iteration/task-012-obsidian-export`; check actual Git/PR state before further work.
+Task 010 code and tests were already present at Task 011
+entry; do not infer historical acceptance from their presence. Work only on an
+explicitly assigned task. Account-wide sync, CLI export, sync/export
+and import-state orchestration remain unimplemented and require a new assignment.
+Task 013 has not started.
