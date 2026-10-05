@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import * as application from '../src/application/sync.js';
+import * as application from '../src/application/sync-collection.js';
 import * as config from '../src/auth/google-client-config.js';
 import * as oauth from '../src/auth/google-oauth.js';
 import { FileTokenStore } from '../src/auth/token-store.js';
@@ -29,12 +29,14 @@ afterEach(() => {
 
 function setup() {
   const storage: Storage = {
-    knowledgeItems: { findByIdentity: vi.fn(), upsert: vi.fn() },
+    knowledgeItems: { findByIdentity: vi.fn(), listAll: vi.fn(), upsert: vi.fn() },
+    collections: { upsert: vi.fn(), listAll: vi.fn() },
+    collectionMemberships: { add: vi.fn(), listAll: vi.fn() },
     getImported: vi.fn(), recordImport: vi.fn(), close: vi.fn(),
   };
   const open = vi.spyOn(sqlite, 'openStorage').mockReturnValue(storage);
-  const sync = vi.spyOn(application, 'sync').mockResolvedValue({ processed: 7, new: 2, changed: 1, unchanged: 4 });
-  const collect = vi.spyOn(YouTubeCollector.prototype, 'collect');
+  const sync = vi.spyOn(application, 'syncCollection').mockResolvedValue({ processed: 7, new: 2, changed: 1, unchanged: 4 });
+  const collect = vi.spyOn(YouTubeCollector.prototype, 'collectCollection');
   const parse = vi.spyOn(parser, 'parsePlaylistId');
   const loadConfig = vi.spyOn(config, 'loadGoogleClientConfig')
     .mockResolvedValue({ client_id: 'fake-id', client_secret: 'fake-secret' });
@@ -49,7 +51,7 @@ describe('single-playlist composition', () => {
     const { storage, sync, collect, parse, loadConfig, provider } = setup();
     expect(await syncYouTubePlaylist(playlist, { auth: 'api-key' })).toEqual({ processed: 7, new: 2, changed: 1, unchanged: 4 });
     expect(parse).toHaveBeenCalledExactlyOnceWith(playlist);
-    expect(sync).toHaveBeenCalledExactlyOnceWith(expect.any(YouTubeCollector), storage.knowledgeItems);
+    expect(sync).toHaveBeenCalledExactlyOnceWith(expect.any(YouTubeCollector), storage);
     expect(collect).not.toHaveBeenCalled();
     expect(storage.knowledgeItems.upsert).not.toHaveBeenCalled();
     expect(storage.recordImport).not.toHaveBeenCalled();
@@ -150,7 +152,7 @@ describe('single-playlist composition', () => {
     expect(open).toHaveBeenCalledExactlyOnceWith(sibling);
   });
 
-  it.each([[], ['--help'], ['youtube', '--help'], ['youtube', 'sync', '--help']])
+  it.each([[], ['--help'], ['youtube', '--help'], ['youtube', 'sync', '--help'], ['youtube', 'sync-obsidian', '--help']])
   ('real startup/help does not access credentials, authenticate, fetch, or open storage (%j)', async (...args: string[]) => {
     const { loadConfig, provider, open, sync } = setup();
     const loadToken = vi.spyOn(FileTokenStore.prototype, 'loadRefreshToken');

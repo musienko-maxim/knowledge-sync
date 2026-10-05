@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { createProgram } from '../src/cli/program.js';
 import { GoogleAuthError } from '../src/auth/google-client-config.js';
 import type { YouTubeCommands } from '../src/cli/youtube.js';
+import { SyncCommandError } from '../src/cli/youtube-sync.js';
+import { YouTubeError } from '../src/collectors/youtube/youtube-error.js';
 
 it('prints help without requiring configuration or opening storage', () => {
   let output = '';
@@ -26,6 +28,15 @@ function setupCommands() {
     logout: vi.fn<YouTubeCommands['logout']>().mockResolvedValue(undefined),
     playlists: vi.fn<YouTubeCommands['playlists']>().mockResolvedValue([{ id: 'PLone', title: 'One' }, { id: 'PLtwo', title: 'Two' }]),
     sync: vi.fn<YouTubeCommands['sync']>().mockResolvedValue({ processed: 42, new: 10, changed: 4, unchanged: 28 }),
+    syncAll: vi.fn<YouTubeCommands['syncAll']>().mockResolvedValue({
+      playlists: { discovered: 2, succeeded: 2, failed: 0, unattempted: 0 },
+      items: { processed: 4, new: 3, changed: 1, unchanged: 0 },
+      failures: [], export: { status: 'not-requested' },
+    }),
+    syncObsidian: vi.fn<YouTubeCommands['syncObsidian']>().mockResolvedValue({
+      sync: { processed: 3, new: 1, changed: 1, unchanged: 1 },
+      export: { processed: 5, succeeded: 5, failed: 0, failures: [] },
+    }),
   };
   let output = '';
   let errors = '';
@@ -41,8 +52,83 @@ function setupCommands() {
   return { commands, program, output: () => output, errors: () => errors };
 }
 
+describe('account sync CLI', () => {
+  it('prints help without running setup', async () => {
+    const { commands, program, output } = setupCommands();
+    await expect(program.parseAsync(['youtube', 'sync-all', '--help'], { from: 'user' })).rejects.toMatchObject({ exitCode: 0 });
+    expect(output()).toContain('--vault');
+    expect(output()).toContain('--db');
+    expect(output()).not.toContain('--auth');
+    for (const command of Object.values(commands)) expect(command).not.toHaveBeenCalled();
+  });
+
+  it.each([[], ['--db', 'items.sqlite', '--vault', 'chosen vault']])
+  ('passes only explicit account options and prints a summary (%j)', async (...args: string[]) => {
+    const { commands, program, output, errors } = setupCommands();
+    await program.parseAsync(['youtube', 'sync-all', ...args], { from: 'user' });
+    expect(commands.syncAll).toHaveBeenCalledExactlyOnceWith(args.length ? { db: 'items.sqlite', vault: 'chosen vault' } : {});
+    expect(output()).toContain('Playlists: discovered=2 succeeded=2 failed=0 unattempted=0');
+    expect(output()).toContain('Items: processed=4 new=3 changed=1 unchanged=0');
+    expect(errors()).toBe('');
+  });
+
+  it.each([['--auth', 'oauth'], ['--auth', 'api-key'], ['PL123'], ['--db'], ['--vault']])
+  ('rejects unsupported/malformed arguments (%j)', async (...args: string[]) => {
+    const { commands, program } = setupCommands();
+    await expect(program.parseAsync(['youtube', 'sync-all', ...args], { from: 'user' })).rejects.toMatchObject({ exitCode: 1 });
+    expect(commands.syncAll).not.toHaveBeenCalled();
+  });
+
+  it('keeps playlist and unexpected export failures observable and escapes metadata', async () => {
+    const { commands, program, output, errors } = setupCommands();
+    commands.syncAll.mockResolvedValue({
+      playlists: { discovered: 2, succeeded: 1, failed: 1, unattempted: 0 },
+      items: { processed: 1, new: 1, changed: 0, unchanged: 0 },
+      failures: [{ playlistId: 'PLbad', playlistTitle: 'bad\n\u001b[31m\u202e', error: new Error('fake-secret') }],
+      export: { status: 'failed', stage: 'snapshot', error: { detail: 'fake-secret' } },
+    });
+    await expect(program.parseAsync(['youtube', 'sync-all', '--vault', 'vault'], { from: 'user' }))
+      .rejects.toMatchObject({ exitCode: 1, code: 'knowledge-sync.account-sync' });
+    expect(output()).toContain('succeeded=1 failed=1');
+    expect(errors()).toContain('Playlist failed');
+    expect(errors()).toContain('snapshot');
+    expect(errors()).toContain('bad\\n\\u001b[31m\\u202e');
+    expect(errors()).not.toMatch(/fake-secret|\u001b|\u202e|YouTube command failed/);
+    expect(errors().match(/Account synchronization incomplete/g)).toHaveLength(1);
+  });
+
+  it('reports partial export diagnostics with a nonzero result even if playlists succeeded', async () => {
+    const { commands, program, errors, output } = setupCommands();
+    commands.syncAll.mockResolvedValue({
+      playlists: { discovered: 0, succeeded: 0, failed: 0, unattempted: 0 },
+      items: { processed: 0, new: 0, changed: 0, unchanged: 0 }, failures: [],
+      export: { status: 'completed', result: { processed: 1, succeeded: 0, failed: 1, failures: [{
+        index: 0, item: { source: 'other', sourceId: 'old', title: 'Old', url: 'https://example.com' }, error: new Error('fake-secret'),
+      }] } },
+    });
+    await expect(program.parseAsync(['youtube', 'sync-all', '--vault', 'vault'], { from: 'user' })).rejects.toMatchObject({ exitCode: 1 });
+    expect(output()).toContain('Export: attempted=1 succeeded=0 failed=1');
+    expect(errors()).toContain('Export failed at index 0');
+    expect(errors()).not.toContain('fake-secret');
+  });
+
+  it('prints a late fatal failure and unattempted count while hiding unknown details', async () => {
+    const { commands, program, errors, output } = setupCommands();
+    commands.syncAll.mockResolvedValue({
+      playlists: { discovered: 3, succeeded: 1, failed: 1, unattempted: 1 },
+      items: { processed: 1, new: 1, changed: 0, unchanged: 0 },
+      failures: [{ playlistId: 'PLbad', error: undefined }],
+      fatal: { stage: 'playlist', error: undefined }, export: { status: 'skipped' },
+    });
+    await expect(program.parseAsync(['youtube', 'sync-all'], { from: 'user' })).rejects.toMatchObject({ exitCode: 1 });
+    expect(output()).toContain('unattempted=1');
+    expect(errors()).toContain('Account sync stopped during playlist');
+    expect(errors()).toContain('Obsidian export skipped');
+  });
+});
+
 describe('YouTube CLI commands', () => {
-  it.each([{ args: [] }, { args: ['--help'] }, { args: ['youtube', '--help'] }, { args: ['youtube', 'auth', '--help'] }, { args: ['youtube', 'sync', '--help'] }])
+  it.each([{ args: [] }, { args: ['--help'] }, { args: ['youtube', '--help'] }, { args: ['youtube', 'auth', '--help'] }, { args: ['youtube', 'sync', '--help'] }, { args: ['youtube', 'sync-obsidian', '--help'] }])
   ('initializes and prints help without executing any OAuth/file operations ($args)', async ({ args }) => {
     const { commands, program, output } = setupCommands();
     if (args.includes('--help')) {
@@ -55,7 +141,7 @@ describe('YouTube CLI commands', () => {
   it('exposes the required command tree', () => {
     const { program } = setupCommands();
     const youtube = program.commands.find((command) => command.name() === 'youtube')!;
-    expect(youtube.commands.map((command) => command.name())).toEqual(['auth', 'playlists', 'sync']);
+    expect(youtube.commands.map((command) => command.name())).toEqual(['auth', 'playlists', 'sync', 'sync-obsidian', 'sync-all']);
     expect(youtube.commands[0]!.commands.map((command) => command.name())).toEqual(['login', 'status', 'logout']);
   });
 
@@ -147,5 +233,109 @@ describe('YouTube CLI commands', () => {
     expect(commands.login).not.toHaveBeenCalled();
     expect(commands.status).not.toHaveBeenCalled();
     expect(commands.logout).not.toHaveBeenCalled();
+  });
+});
+
+describe('YouTube sync-obsidian CLI', () => {
+  it('documents options, the auth default, and export of all persisted items in help', async () => {
+    const { program, output } = setupCommands();
+    await expect(program.parseAsync(['youtube', 'sync-obsidian', '--help'], { from: 'user' }))
+      .rejects.toMatchObject({ exitCode: 0 });
+    expect(output()).toContain('sync-obsidian [options] <playlist>');
+    expect(output()).toContain('all persisted items');
+    expect(output()).toContain('--auth <mode>');
+    expect(output()).toMatch(/default:\s+"api-key"/);
+    expect(output()).toContain('--db <path>');
+    expect(output()).toContain('--vault <path>');
+    expect(output()).toContain('OBSIDIAN_VAULT_PATH');
+  });
+
+  it.each([
+    { args: ['PLone'], playlist: 'PLone', options: { auth: 'api-key' } },
+    { args: ['PLone', '--auth', 'api-key', '--vault', ' vault '], playlist: 'PLone', options: { auth: 'api-key', vault: ' vault ' } },
+    { args: ['https://www.youtube.com/playlist?list=PLone', '--auth', 'oauth', '--db', 'db/items.sqlite', '--vault', 'notes'],
+      playlist: 'https://www.youtube.com/playlist?list=PLone', options: { auth: 'oauth', db: 'db/items.sqlite', vault: 'notes' } },
+  ])('delegates once and prints both independent sets of counters ($args)', async ({ args, playlist, options }) => {
+    const { program, commands, output, errors } = setupCommands();
+    await program.parseAsync(['youtube', 'sync-obsidian', ...args], { from: 'user' });
+    expect(commands.syncObsidian).toHaveBeenCalledExactlyOnceWith(playlist, options);
+    expect(commands.sync).not.toHaveBeenCalled();
+    expect(output()).toBe('Sync: processed=3 new=1 changed=1 unchanged=1\nExport: attempted=5 succeeded=5 failed=0\n');
+    expect(errors()).toBe('');
+  });
+
+  it.each([[], ['PLone', 'extra'], ['PLone', '--auth', 'apikey'], ['PLone', '--auth', 'automatic'],
+    ['PLone', '--auth'], ['PLone', '--db'], ['PLone', '--vault']])('rejects invalid arguments %j before execution', async (...args) => {
+    const { program, commands } = setupCommands();
+    await expect(program.parseAsync(['youtube', 'sync-obsidian', ...args], { from: 'user' }))
+      .rejects.toMatchObject({ exitCode: 1 });
+    expect(commands.syncObsidian).not.toHaveBeenCalled();
+  });
+
+  it('prints escaped failed identities and safe reasons once, then exits without a false fatal diagnostic', async () => {
+    const { program, commands, output, errors } = setupCommands();
+    const item = Object.freeze({ source: 'other\n\u001b[31m', sourceId: 'a\"\u009b\u202e', title: 'secret-title', url: 'https://example.com' });
+    const failure = Object.assign(new Error('fake-token path'), { code: 'EACCES', cause: new Error('fake-secret') });
+    const result = Object.freeze({
+      sync: Object.freeze({ processed: 1, new: 1, changed: 0, unchanged: 0 }),
+      export: Object.freeze({ processed: 2, succeeded: 1, failed: 1,
+        failures: Object.freeze([Object.freeze({ index: 1, item, error: failure })]) }),
+    });
+    commands.syncObsidian.mockResolvedValue(result);
+    await expect(program.parseAsync(['youtube', 'sync-obsidian', 'PLone'], { from: 'user' }))
+      .rejects.toMatchObject({ exitCode: 1, code: 'knowledge-sync.obsidian-export' });
+    expect(output()).toBe('Sync: processed=1 new=1 changed=0 unchanged=0\nExport: attempted=2 succeeded=1 failed=1\n');
+    expect(errors()).toContain('index 1 (source="other\\n\\u001b[31m", sourceId="a\\"\\u009b\\u202e")');
+    expect(errors()).toContain('Permission denied while writing the note (EACCES).');
+    expect(errors()).toContain('successful SQLite writes remain committed');
+    expect(errors().match(/Export failed at index/g)).toHaveLength(1);
+    expect(errors()).not.toMatch(/fake-|secret-title|YouTube command failed|\u001b|\u009b|\u202e/);
+    expect(commands.syncObsidian).toHaveBeenCalledTimes(1);
+    expect(result.export.failures[0]!.error).toBe(failure);
+  });
+
+  it.each([
+    { error: Object.assign(new Error('secret path'), { code: 'ENOENT' }), expected: 'does not exist (ENOENT)' },
+    { error: new Error('Vault path must be an existing directory.'), expected: 'Vault path must be an existing directory.' },
+    { error: new Error('sourceId must contain well-formed Unicode.'), expected: 'sourceId must contain well-formed Unicode.' },
+    { error: new Error('fake-token'), expected: 'Check the vault path, permissions, and item identity.' },
+    { error: { code: 'fake-token', message: 'fake-secret' }, expected: 'Check the vault path, permissions, and item identity.' },
+    { error: 'fake-token', expected: 'Check the vault path, permissions, and item identity.' },
+    { error: null, expected: 'Check the vault path, permissions, and item identity.' },
+    { error: undefined, expected: 'Check the vault path, permissions, and item identity.' },
+  ])('reports safe diagnostics for captured errors: $expected', async ({ error, expected }) => {
+    const { program, commands, errors } = setupCommands();
+    commands.syncObsidian.mockResolvedValue({
+      sync: { processed: 0, new: 0, changed: 0, unchanged: 0 },
+      export: { processed: 1, succeeded: 0, failed: 1,
+        failures: [{ index: 0, item: { source: 'example', sourceId: 'a', title: 'A', url: 'https://example.com' }, error }] },
+    });
+    await expect(program.parseAsync(['youtube', 'sync-obsidian', 'PLone'], { from: 'user' }))
+      .rejects.toMatchObject({ exitCode: 1 });
+    expect(errors()).toContain(expected);
+    expect(errors()).not.toMatch(/fake-|secret path|YouTube command failed/);
+  });
+
+  it.each([
+    new GoogleAuthError('Run auth login.', { cause: new Error('fake-token') }),
+    new SyncCommandError('Set --vault or OBSIDIAN_VAULT_PATH.'),
+    new YouTubeError('YouTube request failed (HTTP 403).'),
+    new Error('fake-secret'), undefined,
+  ])('preserves safe fatal guidance and sanitizes arbitrary thrown values %j', async (error) => {
+    const { program, commands, output, errors } = setupCommands();
+    commands.syncObsidian.mockRejectedValue(error);
+    await expect(program.parseAsync(['youtube', 'sync-obsidian', 'PLone'], { from: 'user' }))
+      .rejects.toMatchObject({ exitCode: 1, code: 'knowledge-sync.youtube' });
+    expect(output()).toBe('');
+    expect(errors()).toContain(error instanceof GoogleAuthError || error instanceof SyncCommandError || error instanceof YouTubeError
+      ? error.message : 'YouTube command failed');
+    expect(errors()).not.toContain('fake-');
+  });
+
+  it('keeps --vault unavailable to ordinary sync', async () => {
+    const { program, commands } = setupCommands();
+    await expect(program.parseAsync(['youtube', 'sync', 'PLone', '--vault', 'notes'], { from: 'user' }))
+      .rejects.toMatchObject({ exitCode: 1 });
+    expect(commands.sync).not.toHaveBeenCalled();
   });
 });

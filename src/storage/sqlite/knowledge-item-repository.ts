@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import type { KnowledgeItem } from '../../core/models/knowledge-item.js';
 import type { KnowledgeItemRepository } from '../knowledge-item-repository.js';
@@ -25,6 +25,11 @@ export function createKnowledgeItemRepository(db: BetterSQLite3Database): Knowle
         eq(knowledgeItems.source, source), eq(knowledgeItems.sourceId, sourceId),
       )).get();
       return row ? toKnowledgeItem(row) : null;
+    },
+    async listAll() {
+      return db.select().from(knowledgeItems)
+        .orderBy(asc(knowledgeItems.source), asc(knowledgeItems.sourceId))
+        .all().map(toKnowledgeItem);
     },
     async upsert(item) {
       const fields = {

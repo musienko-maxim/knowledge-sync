@@ -1,5 +1,7 @@
 import type { ItemIdentity } from '../core/models/knowledge-item.js';
 import type { KnowledgeItemRepository } from './knowledge-item-repository.js';
+import type { CollectionRepository } from './collection-repository.js';
+import type { CollectionMembershipRepository } from './collection-membership-repository.js';
 
 export interface ImportedItem extends ItemIdentity {
   url: string;
@@ -13,7 +15,9 @@ export interface SyncStorage {
   close(): void;
 }
 
-/** Both persistence boundaries share one database lifecycle. */
+/** All persistence boundaries share one database lifecycle. */
 export interface Storage extends SyncStorage {
   readonly knowledgeItems: KnowledgeItemRepository;
+  readonly collections: CollectionRepository;
+  readonly collectionMemberships: CollectionMembershipRepository;
 }

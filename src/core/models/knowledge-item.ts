@@ -7,6 +7,7 @@ export const knowledgeItemSchema = z.object({
   title: z.string().trim().min(1),
   description: z.string().optional(),
   author: z.string().optional(),
+  // Legacy display metadata; CollectionMembership is authoritative for membership.
   collection: z.string().optional(),
   publishedAt: z.iso.datetime({ offset: true }).optional(),
 });

@@ -21,6 +21,7 @@ function setup(items: KnowledgeItem[] = [], initial: KnowledgeItem[] = []) {
   return {
     collector: { collect: vi.fn<Collector['collect']>().mockResolvedValue(items) },
     repository: {
+      listAll: vi.fn<KnowledgeItemRepository['listAll']>(),
       findByIdentity: vi.fn<KnowledgeItemRepository['findByIdentity']>().mockImplementation(
         async (source, sourceId) => stored.get(JSON.stringify([source, sourceId])) ?? null,
       ),

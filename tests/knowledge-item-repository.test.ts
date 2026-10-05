@@ -1,9 +1,11 @@
 import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { knowledgeItemSchema, type KnowledgeItem } from '../src/core/models/knowledge-item.js';
+import { createKnowledgeItemRepository } from '../src/storage/sqlite/knowledge-item-repository.js';
 import { openStorage } from '../src/storage/sqlite/storage.js';
 import type { Storage } from '../src/storage/storage.js';
 
@@ -45,6 +47,58 @@ it('inserts and reconstructs all domain fields without changing the publication 
 
 it('returns null for an unknown identity', async () => {
   expect(await open().knowledgeItems.findByIdentity('youtube', 'missing')).toBeNull();
+});
+
+it('lists an empty persisted snapshot when no items exist', async () => {
+  expect(await open().knowledgeItems.listAll()).toStrictEqual([]);
+});
+
+it('lists all identities in explicit source then sourceId order even with reversed unordered scans', async () => {
+  const path = databasePath();
+  const store = open(path);
+  const items = [
+    { ...required, source: 'youtube', sourceId: 'z' },
+    { ...required, source: 'example', sourceId: 'z' },
+    { ...required, source: 'youtube', sourceId: 'a' },
+    { ...required, source: 'example', sourceId: 'a' },
+  ];
+  for (const item of items) await store.knowledgeItems.upsert(item);
+
+  // The pragma is connection-local; query through a repository using this connection.
+  const raw = new Database(path);
+  try {
+    const repository = createKnowledgeItemRepository(drizzle(raw));
+    for (const reverse of [0, 1]) {
+      raw.pragma(`reverse_unordered_selects = ${reverse}`);
+      expect(await repository.listAll()).toStrictEqual([items[3], items[1], items[2], items[0]]);
+    }
+  } finally { raw.close(); }
+});
+
+it.each([
+  { name: 'all fields and exact offset date text', item: complete, expected: complete },
+  { name: 'absent optional fields', item: required, expected: required },
+  { name: 'empty optional text', item: { ...required, description: '', author: '', collection: '' },
+    expected: { ...required, description: '', author: '', collection: '' } },
+  { name: 'explicitly undefined optional fields', item: { ...required, description: undefined,
+    author: undefined, collection: undefined, publishedAt: undefined }, expected: required },
+])('reconstructs $name in the persisted snapshot', async ({ item, expected }) => {
+  const repository = open().knowledgeItems;
+  await repository.upsert(item);
+  expect(await repository.listAll()).toStrictEqual([expected]);
+});
+
+it('lists the latest upsert once per identity and keeps item persistence separate from import state', async () => {
+  const store = open();
+  const other = { ...required, sourceId: 'videoB' };
+  await store.knowledgeItems.upsert(complete);
+  await store.knowledgeItems.upsert(other);
+  const updated = { ...required, title: 'Updated title', url: 'https://example.com/updated' };
+  await store.knowledgeItems.upsert(updated);
+  await store.knowledgeItems.upsert({ ...updated });
+  expect(await store.knowledgeItems.listAll()).toStrictEqual([updated, other]);
+  expect(store.getImported(updated)).toBeUndefined();
+  expect(store.getImported(other)).toBeUndefined();
 });
 
 it('keeps repeated upserts to one row and enforces composite uniqueness in SQLite', async () => {
@@ -133,7 +187,8 @@ it('rejects operations after the shared connection is closed without swallowing 
   store.close();
   stores.delete(store);
   for (const operation of [() => store.knowledgeItems.upsert(required),
-    () => store.knowledgeItems.findByIdentity(required.source, required.sourceId)]) {
+    () => store.knowledgeItems.findByIdentity(required.source, required.sourceId),
+    () => store.knowledgeItems.listAll()]) {
     const error = await operation().catch((cause: unknown) => cause);
     expect(error).toBeInstanceOf(Error);
     const underlying = (error as Error).cause ?? error;
