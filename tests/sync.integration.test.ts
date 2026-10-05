@@ -192,6 +192,7 @@ it('keeps successful SQLite writes when a later repository call rejects and stop
     await store.knowledgeItems.upsert(item);
   });
   const repository: KnowledgeItemRepository = {
+    listAll: vi.fn(store.knowledgeItems.listAll),
     findByIdentity: vi.fn(store.knowledgeItems.findByIdentity),
     upsert,
   };
@@ -217,7 +218,9 @@ it('preserves earlier SQLite writes after a lookup failure and stops before curr
     });
   const upsert = vi.fn(store.knowledgeItems.upsert);
 
-  await expect(sync(collector([first, failing, later]), { findByIdentity, upsert })).rejects.toBe(error);
+  await expect(sync(collector([first, failing, later]), {
+    findByIdentity, upsert, listAll: vi.fn(store.knowledgeItems.listAll),
+  })).rejects.toBe(error);
   expect(findByIdentity.mock.calls).toEqual([
     [first.source, first.sourceId], [failing.source, failing.sourceId],
   ]);

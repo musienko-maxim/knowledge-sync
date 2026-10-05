@@ -1,10 +1,11 @@
 import { knowledgeItemSchema, type KnowledgeItem } from '../../core/models/knowledge-item.js';
 import type { Collector } from '../collector.js';
+import type { CollectedCollection, CollectionCollector } from '../collection-collector.js';
 import { parsePlaylistId } from './playlist-id.js';
-import type { YouTubeClient, YouTubePlaylistItem } from './youtube-client.js';
+import type { YouTubeClient, YouTubePlaylistItem, YouTubePlaylistSummary } from './youtube-client.js';
 import { YouTubeError } from './youtube-error.js';
 
-export class YouTubeCollector implements Collector {
+export class YouTubeCollector implements Collector, CollectionCollector {
   private readonly playlistId: string;
 
   constructor(private readonly client: YouTubeClient, playlistInput: string) {
@@ -12,7 +13,14 @@ export class YouTubeCollector implements Collector {
   }
 
   async collect(): Promise<KnowledgeItem[]> {
-    const playlist = await this.client.getPlaylist(this.playlistId);
+    return (await this.collectCollection()).items;
+  }
+
+  async collectCollection(): Promise<CollectedCollection> {
+    const playlist: YouTubePlaylistSummary = {
+      id: this.playlistId,
+      ...await this.client.getPlaylist(this.playlistId),
+    };
     const items: KnowledgeItem[] = [];
     const seenTokens = new Set<string>();
     let pageToken: string | undefined;
@@ -30,7 +38,10 @@ export class YouTubeCollector implements Collector {
         seenTokens.add(pageToken);
       }
     } while (pageToken);
-    return items;
+    return {
+      collection: { source: 'youtube', sourceId: playlist.id, title: playlist.title },
+      items,
+    };
   }
 }
 

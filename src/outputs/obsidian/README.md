@@ -50,3 +50,32 @@ Empty input returns zero counts and no failures without touching the vault.
 There is no batch-level vault validation: if the single-item exporter fails for
 every entry, every failure is recorded. The batch adds no retries, deduplication,
 rollback, concurrency, or sync/CLI/database integration.
+
+The application-level [syncToObsidian](../../application/sync-to-obsidian.ts)
+composes successful sync, an ordered repository snapshot read, and this batch API.
+Every persisted item is attempted, including unchanged and previously retained
+items. Partial output failures leave persistence intact and are returned normally;
+the full snapshot allows a later run to attempt failed notes again. It guarantees
+no exact vault mirror, reconciliation, deletion, retry, rollback, or export-state
+tracking. The batch implementation remains independent of storage and the CLI.
+
+Task 015's [syncCollectionToObsidian](../../application/sync-collection-to-obsidian.ts)
+is the single-playlist CLI path. It completes collection, item, and membership
+persistence before reading the same full item snapshot. A relationship-write
+failure skips export; an output failure leaves all completed database writes intact.
+The generic `syncToObsidian` API and the output primitives remain unchanged.
+
+SQLite collections and memberships are authoritative for observed playlist
+associations. Markdown still exposes only the legacy `KnowledgeItem.collection`
+title from the last synchronized playlist, so alternating playlists can change
+that field in a shared video's note. There is one note per item identity, no
+collection pages, and no projection of complete membership yet. Historical
+memberships are populated by re-syncing playlists, never inferred from old titles.
+
+Task 016's [syncAccount](../../application/sync-account.ts) optionally invokes one
+final snapshot read and batch export after all playlists. Recoverable playlist
+failures do not suppress that export, including when all playlists fail or
+discovery returns no playlists. Fatal account errors skip export. Snapshot and
+unexpected batch exceptions are retained alongside the accumulated playlist
+results, while individual note failures keep the existing batch result semantics.
+The selected database's entire item snapshot remains the projection source.

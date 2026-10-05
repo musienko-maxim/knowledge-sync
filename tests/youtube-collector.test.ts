@@ -106,6 +106,28 @@ describe('YouTubeCollector', () => {
     expect(await new YouTubeCollector(fakeClient(), 'PL123').collect()).toEqual([]);
   });
 
+  it('returns normalized collection identity and metadata with all collected pages', async () => {
+    const client = fakeClient();
+    client.listPlaylistItems.mockResolvedValueOnce({ items: [video('a')], nextPageToken: 'next' })
+      .mockResolvedValueOnce({ items: [video('b')] });
+    const collected = await new YouTubeCollector(client, 'https://www.youtube.com/playlist?list=PL123').collectCollection();
+    expect(collected.collection).toEqual({ source: 'youtube', sourceId: 'PL123', title: 'Learning' });
+    expect(collected.items.map((item) => item.sourceId)).toEqual(['a', 'b']);
+    expect(collected.items.every((item) => item.collection === 'Learning')).toBe(true);
+    expect(client.getPlaylist).toHaveBeenCalledExactlyOnceWith('PL123');
+    expect(client.listPlaylistItems.mock.calls).toEqual([['PL123', undefined], ['PL123', 'next']]);
+  });
+
+  it.each([{ entries: [] }, { entries: [{}, video(''), { snippet: { title: 'No ID' } }] }])
+  ('preserves collection context when there are no usable items (%j)', async ({ entries }) => {
+    const client = fakeClient();
+    client.listPlaylistItems.mockResolvedValue({ items: entries });
+    expect(await new YouTubeCollector(client, 'PL123').collectCollection()).toEqual({
+      collection: { source: 'youtube', sourceId: 'PL123', title: 'Learning' }, items: [],
+    });
+    expect(client.getPlaylist).toHaveBeenCalledExactlyOnceWith('PL123');
+  });
+
   it('surfaces metadata failures without requesting items', async () => {
     const client = fakeClient();
     client.getPlaylist.mockRejectedValue(new Error('Playlist PL123 inaccessible'));

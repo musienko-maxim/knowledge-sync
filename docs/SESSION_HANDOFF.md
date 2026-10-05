@@ -1,8 +1,9 @@
 # Project Session Handoff
 
-Updated: 2026-10-02
+Updated: 2026-10-05
 
-Latest checkpoint: [Tasks 008–012](sessions/2026-10-02-tasks-008-012-checkpoint.md).
+Latest checkpoint: [Tasks 008–016 PR preparation](sessions/2026-10-05-tasks-008-016-pr.md).
+The [Tasks 008–012 checkpoint](sessions/2026-10-02-tasks-008-012-checkpoint.md) is historical.
 The [Tasks 005–007 checkpoint](sessions/2026-09-28-tasks-005-007-checkpoint.md)
 is historical; PR #3 has since been merged.
 The earlier [Task 004 checkpoint](sessions/2026-09-27-task-004-checkpoint.md)
@@ -10,7 +11,7 @@ is a historical record; PR #2 has since been merged.
 
 ## Current state
 
-`knowledge-sync` has implementations for Tasks 001–012:
+`knowledge-sync` has implementations for Tasks 001–016:
 
 - Task 001: project foundation, domain model, SQLite synchronization state, output boundary, and CLI bootstrap.
 - Task 002: public YouTube playlist collector with URL/ID parsing, pagination, normalized `KnowledgeItem` output, and API-key access.
@@ -35,6 +36,17 @@ is a historical record; PR #2 has since been merged.
   and writer, without sync, CLI, database, or import-state integration.
 - Task 012: sequential batch export through the single-item exporter, with
   best-effort continuation, per-entry statistics, and original failure details.
+- Task 013: application-level sync-to-Obsidian orchestration, with a full ordered
+  persisted snapshot read after successful sync and before batch export.
+- Task 014: separate `youtube sync-obsidian <playlist>` CLI command using the
+  existing application orchestration, auth, and database conventions, with vault
+  resolution, safe per-item failure reporting, and non-zero status on incomplete export.
+- Task 015: separate collections and same-source many-to-many memberships in
+  SQLite, additive schema upgrade, and collection-aware single-playlist sync for
+  both existing commands. Legacy collection text/output/classification is retained.
+- Task 016: OAuth-only `youtube sync-all`, sequential owned-playlist sync,
+  retained playlist/fatal/export outcomes, successful-playlist item counters,
+  and one optional final full-snapshot export after recoverable failures.
 
 The working tree also contains the Task 003 refresh-error follow-up: invalid
 authorization, network failures, transient server failures, and unknown errors
@@ -45,10 +57,13 @@ Task 004 is described in the root `task-004.md`; its implementation is included
 in the `iteration/task-004-persistence` checkpoint branch.
 `docs/tasks/` is currently absent; use the exact task file named by the user.
 
-The CLI stops at manual single-playlist collection, classification, and persistence.
-Separate Markdown rendering, stable note-path generation, filesystem writing, and
-single-item and batch export composition are available. Account-wide synchronization,
-sync/export and import-state orchestration, CLI export, Facebook, AI,
+Ordinary `youtube sync` performs manual single-playlist collection, classification,
+and item/collection/membership persistence. `youtube sync-obsidian` now invokes
+`syncCollectionToObsidian()` to export
+all persisted items. Separate renderer, path builder, writer, and single/batch
+export APIs remain available. `youtube sync-all` discovers all owned playlists
+and persists them sequentially; only explicit `--vault` enables one final export.
+Import-state orchestration, Facebook, AI,
 scheduling, background services, and Git automation remain unimplemented.
 
 Task 005 was implemented according to the then-available `task-005.md`,
@@ -82,6 +97,123 @@ Task 008 source/tests and unrelated pre-existing deletions were preserved.
 No commits or pushes were made during Task 009.
 
 ## Important architecture
+
+- Task 016's `syncAccount(source, repositories, vaultPath?)` completes discovery
+  before invoking `syncCollection()` sequentially in discovery order. The small
+  `AccountSyncSource` boundary supplies discovery, collector creation, and fatal
+  source-error classification. `createYouTubeAccountSource()` reuses one client
+  with existing `YouTubeAccount` and `YouTubeCollector`; no alternative discovery
+  or account collection implementation is introduced.
+- `AccountSyncResult` contains discovered/succeeded/failed/unattempted playlist
+  counts, item counters summed only from successful playlist results, original
+  playlist failures, optional tagged fatal stage/error, and a tagged export outcome
+  (not-requested, skipped, completed batch result, or snapshot/batch exception).
+  Failed partial writes remain persisted but are excluded from item counters.
+  A fatal attempted playlist counts as failed; later entries remain unattempted.
+- Google auth/provider errors, API credential rejection, and quota exhaustion
+  are fatal. `YouTubeError.accountFatal` carries structured classification while
+  existing safe diagnostic text remains unchanged. SQLite FULL/IOERR/CORRUPT/
+  NOTADB/READONLY/CANTOPEN codes, including extended codes through cycle-safe cause
+  chains, also stop the run. Ordinary API transport/server/access/metadata and
+  individual constraint failures continue to later playlists. No message parsing,
+  retry, rollback, reconciliation, or schema change is added.
+- Only explicit `sync-all --vault <path>` enables export; its existing-directory
+  preflight and database containment guard precede OAuth/setup. `--db` retains
+  the existing option/env/default precedence. Without export, the environment
+  vault guard still applies. One OAuth provider/client and one storage lifecycle
+  serve the run; storage closes before presentation even on failure.
+- Recoverable playlist failures (including all failures) and zero discovered
+  playlists still permit one requested full snapshot/export, including retained
+  items from other sources. Fatal discovery/playlist outcomes suppress export.
+  Snapshot and unexpected batch errors retain earlier summaries and failures;
+  thrown `undefined` is represented explicitly. The CLI reports every category,
+  escapes playlist titles/IDs, and exits nonzero if requested work is incomplete.
+
+- Task 015 adds `KnowledgeCollection` (`source`, `sourceId`, `title`) and
+  `CollectionMembership` (`source`, `collectionSourceId`, `itemSourceId`).
+  `Storage.collections` exposes `upsert/listAll`; `Storage.collectionMemberships`
+  exposes `add/listAll`. Lists explicitly order ascending source and identity
+  components. They share the existing connection and close lifecycle.
+- Additive bootstrap DDL adds `collections` (composite identity primary key) and
+  `collection_memberships` (unique triple primary key). Same-source composite
+  foreign keys require both parents; connection initialization enables enforcement.
+  Existing item/import rows, original timestamps, and legacy collection text are
+  untouched. No title-based backfill occurs; re-sync fills authoritative membership.
+- `YouTubeCollector.collectCollection()` returns normalized collection context and
+  items using the existing single metadata request. `collect()` remains compatible.
+  Empty/all-filtered playlists retain their collection context. Discovery, client,
+  OAuth, and existing account collection remained unchanged in Task 015; its
+  account-wide sync command was deferred until Task 016 above.
+- `syncCollection()` collects completely, rejects cross-source items before any
+  writes, upserts the collection, and reuses generic `sync()` with an adapter that
+  awaits each item upsert then membership add. Unchanged items still acquire
+  missing memberships. Failure stops later entries and retains earlier writes,
+  with no rollback, retries, reconciliation, or import recording.
+- `syncCollectionToObsidian()` waits for all persistence before the full ordered
+  item snapshot and unchanged exporter. Errors skip later phases and propagate
+  unchanged. Both CLI commands retain public results, auth, configuration, safe
+  diagnostics, and finally-based cleanup. Generic `sync()` and `syncToObsidian()`
+  remain available unchanged; the earlier Task 014 delegation below is historical.
+- `KnowledgeItem.collection` remains last-synchronized-playlist title metadata for
+  compatibility. It still affects item classification and Markdown; alternating
+  playlists can change both without modifying other memberships. The relationship
+  tables are authoritative for observed membership, not a reconciled live mirror.
+  Playlist position and repeated occurrences within a playlist are omitted.
+
+- `youtube sync-obsidian <playlist>` accepts `--auth <api-key|oauth>` (default
+  `api-key`), `--db <path>`, and `--vault <path>`. The existing `youtube sync`
+  command retains its options, SQLite-only behavior, messages, and auth semantics.
+- `src/cli/youtube-sync.ts` exports `YouTubeSyncObsidianOptions` and
+  `syncYouTubePlaylistToObsidian()`. Small shared collector/open helpers reuse
+  authentication and storage setup. The new composition validates vault presence
+  before dependency setup, invokes `syncCollectionToObsidian()` exactly once, and closes
+  storage in `finally` before presentation, including partial or fatal failures.
+- Vault precedence is `--vault` then `OBSIDIAN_VAULT_PATH`, otherwise configuration
+  error. Explicit blank overrides never fall back; blank env values also fail.
+  Nonblank path text is forwarded unchanged. No implicit vault, `.env` loading,
+  discovery, or creation is added. DB precedence remains `--db`, `DATABASE_PATH`,
+  then `./data/knowledge-sync.sqlite`. Existing canonical ancestor checks reject
+  databases inside the effective selected vault, including symlink/junction
+  aliases. Overridden environment vaults do not govern the new command's guard.
+- CLI stdout prints deterministic sync counters and export attempted/succeeded/
+  failed counters. Full success exits 0; partial export and fatal failures exit 1.
+  Partial failures retain their application result, print available statistics,
+  and report each zero-based index and escaped identity to stderr. A separate
+  presentation helper emits fixed filesystem/contract diagnostics or a safe
+  unknown-error fallback; arbitrary error messages/causes/objects are not dumped.
+  Partial-result exit handling sits outside the fatal catch so `exitOverride()`
+  does not print a second misleading fatal error. Original errors remain internal.
+- Every persisted item remains an export candidate, including other sources and
+  playlists. Partial output failure never rolls back committed SQLite writes.
+  A later unchanged sync can export again. Empty snapshots access no vault and
+  may succeed with a configured nonexistent vault. No retries, reconciliation,
+  deletion, durable export-state tracking, application contract changes, or schema
+  changes were introduced by Task 014. Task 015 adds the relationship schema and
+  collection-aware orchestration described above.
+
+- `src/application/sync-to-obsidian.ts` exports
+  `syncToObsidian(collector, repository, vaultPath): Promise<SyncToObsidianResult>`.
+  It awaits the unchanged `sync()`, then `repository.listAll()`, then the unchanged
+  `exportObsidianNotes()`, returning their original results as `{ sync, export }`.
+  The existing mutable `SyncResult` interface is preserved exactly.
+- `KnowledgeItemRepository.listAll(): Promise<readonly KnowledgeItem[]>` reads all
+  normalized items using explicit ascending `source`, then `sourceId` order and
+  the existing row mapper. Optional NULLs become absent properties, empty strings
+  and exact date text are preserved. No schema, connection, or import-state
+  change was needed; the caller still owns storage lifecycle.
+- SQLite is the source of truth for export. Every persisted item is attempted
+  after successful sync, including unchanged items and items missing from current
+  collection. Duplicate collection entries collapse through existing upserts;
+  sync and export counts can differ. “Full projection” describes attempted export,
+  not a guaranteed vault mirror: writes can fail and deletion/reconciliation is
+  absent. Existing overwrite and non-atomic output behavior remain in effect.
+- Sync failure skips read/export; read failure skips export. Both and unexpected
+  batch-level failures propagate the original thrown value. Ordinary per-item
+  failures resolve in the nested export result. No output failure rolls back
+  persistence; there is no retry, compensation, durable export-state tracking,
+  import recording, or transaction spanning SQLite and the filesystem. A later
+  successful sync attempts unchanged items again. Empty snapshots pass through
+  the batch exporter without vault access. Task 014 adds the CLI integration above.
 
 - `src/outputs/obsidian/export-notes.ts` exports
   `exportObsidianNotes(vaultPath, items: readonly KnowledgeItem[])` returning
@@ -156,7 +288,8 @@ No commits or pushes were made during Task 009.
 - The same OAuth-authenticated client is used for owned-playlist discovery and playlist-item retrieval.
 - OAuth credentials and refresh tokens must remain outside the repository and are never stored in SQLite.
 - `mine=true` discovers playlists owned by the authenticated account; it does not discover every saved or followed playlist.
-- The singular `KnowledgeItem.collection` field remains the current playlist-membership limitation.
+- The singular `KnowledgeItem.collection` field remains legacy output metadata;
+  Task 015's separate tables preserve all observed playlist memberships.
 
 - `openStorage(path).knowledgeItems` implements async `findByIdentity` and `upsert`
   on the existing SQLite/Drizzle connection. `close()` closes both boundaries.
@@ -186,10 +319,11 @@ No commits or pushes were made during Task 009.
 - The caller owns storage cleanup. Sync performs no deduplication, deletion,
   retries, or import recording. Items
   absent from later runs remain stored. Another playlist's value can overwrite
-  singular `collection` context; omitted metadata clears it. Account-wide
-  persistence orchestration remains deferred.
+  singular `collection` context; omitted metadata clears it. Task 016 layers
+  account-wide orchestration over the existing per-collection semantics.
 - `src/cli/youtube-sync.ts` composes the concrete client, collector, storage, and
-  existing `sync()` exactly once. Storage closes in `finally` before the CLI
+  `syncCollection()` exactly once for ordinary sync. Storage closes in `finally`
+  before the CLI
   prints `Processed N items.`. Task 007 extends only the application result;
   storage/domain contracts and CLI output remain unchanged.
 - API-key mode is the default and reads `YOUTUBE_API_KEY` from the process
@@ -209,6 +343,270 @@ No commits or pushes were made during Task 009.
   Credential-bearing error causes and arbitrary response details are not printed.
 
 ## Verification last completed
+
+### Task 016 verification
+
+Task 016 is implemented according to [prompts/task-016.md](../prompts/task-016.md),
+including the user-approved Phase 1 findings and accepted clarifications.
+The `ks-youtube-auth` and `ks-verify` workflows were used; storage error review
+retains the existing persistence contracts.
+
+- `npm.cmd install`: passed; dependencies up to date, none added.
+- Focused command `npm.cmd test -- tests/sync-account.test.ts tests/storage-error.test.ts tests/youtube-account-source.test.ts tests/youtube-client.test.ts tests/youtube-sync-all.test.ts tests/youtube-sync-all.integration.test.ts tests/cli.test.ts`:
+  249 passed in seven files.
+- `npm.cmd test`: 841 passed, one expected Windows POSIX-permissions skip,
+  34 files. Task 016 adds 147 passing cases.
+- `npm.cmd run typecheck` and `npm.cmd run build`: passed.
+- `node dist/cli/index.js` and `node dist/cli/index.js --help`: passed.
+- Built `youtube sync-all --help`, `youtube sync --help`,
+  `youtube sync-obsidian --help`, and `youtube playlists --help`: passed.
+- `npm.cmd exec --offline --package=. -- knowledge-sync` and its `--help`:
+  passed. The new command exposes `--db` and explicit `--vault`, without `--auth`.
+- Independent read-only source/test and final documentation reviews found no
+  actionable issues. Reference, whitespace, and task-scope checks passed;
+  the `ks-verify` workflow is complete with no unresolved findings.
+
+The full suite ran outside the sandbox using the existing test approval because
+known `tsx` subprocess tests require Windows user-information access. Focused
+tests, typecheck, build, and CLI smoke checks passed normally. No test/security
+settings were weakened. All API/OAuth transport was mocked, using fake credentials
+and temporary SQLite/vault fixtures; no live account or user data was accessed.
+
+Tests cover complete/failed paginated discovery, one/many/empty playlists,
+shared-video membership and event counts, first/middle/last/multiple/all recoverable
+failures, partial writes excluded from sums, awaited ordering, late auth/quota/
+SQLite fatal stops, preserved unknown errors, zero-playlist export of retained
+data, single final snapshot/export, combined playlist/snapshot/batch/note failures,
+explicit vault opt-in/preflight, canonical DB containment, storage cleanup,
+safe escaped metadata/errors, and exit status. Existing commands and auth behavior
+remain protected by the full regression suite.
+
+Files added for Task 016:
+
+- `src/collectors/account-sync-source.ts`, `src/collectors/youtube/youtube-account-source.ts`
+- `src/application/sync-account.ts`, `src/storage/storage-error.ts`
+- `src/cli/youtube-sync-all.ts`, `src/cli/account-sync-output.ts`
+- `tests/sync-account.test.ts`, `tests/storage-error.test.ts`,
+  `tests/youtube-account-source.test.ts`, `tests/youtube-sync-all.test.ts`,
+  `tests/youtube-sync-all.integration.test.ts`
+
+Files changed for Task 016:
+
+- `src/collectors/youtube/youtube-client.ts`, `youtube-error.ts`
+- `src/cli/program.ts`, `youtube.ts`, `youtube-sync.ts` (existing helper exports),
+  `obsidian-export-failure.ts` (shared quoting helper export)
+- `tests/cli.test.ts`, `tests/youtube-client.test.ts`
+- `README.md`, `.env.example`, `src/outputs/obsidian/README.md`, this handoff,
+  and the supplied `prompts/task-016.md` (accepted clarifications).
+
+No dependencies, schema changes, or specification deviations. Existing directory
+layout remains `src/{application,auth,cli,collectors,core/models,outputs,storage/sqlite}`,
+`tests`, `data`, `docs`, and `prompts`. No new directories or framework were needed.
+Legacy collection title, observed-not-reconciled memberships, owned-only discovery,
+and failed-playlist counter limitations remain documented. Existing Task 013–015
+work and unrelated deletions were preserved; the now-absent Task 015 specification
+is a historical reference below, not reconstructed. No commits or pushes were made.
+Task 017 has not started.
+
+### Task 015 verification
+
+Task 015 implementation and validation (2026-10-05), following
+[prompts/task-015.md](../prompts/task-015.md) and its accepted review clarifications,
+using `ks-persistence`, `ks-youtube-auth`, and `ks-verify`:
+
+- `npm.cmd install`: passed; dependencies up to date, none added.
+- `npm.cmd test -- tests/youtube-collections.integration.test.ts`: 8 passed.
+- Focused run of `collection-repositories`, `sync-collection`,
+  `sync-collection-to-obsidian`, `youtube-collector`, `youtube-collections.integration`,
+  `youtube-sync`, `youtube-sync-obsidian`, `youtube-sync.integration`, and
+  `youtube-sync-obsidian.integration` test files: 146 passed in nine files.
+- `npm.cmd test`: 694 passed, one intentional Windows POSIX-permissions skip,
+  29 files. Task 015 adds 60 passing cases across new and existing files.
+- `npm.cmd run typecheck`: passed.
+- `npm.cmd run build`: passed.
+- `node dist/cli/index.js` and `node dist/cli/index.js --help`: passed.
+- Built CLI `youtube sync --help`, `youtube sync-obsidian --help`, and
+  `youtube playlists --help`: passed. Full-suite mocked command/account tests
+  verify playlist discovery without accessing a live account.
+- Packaged CLI startup and `--help`: passed.
+- `ks-verify` checks, final whitespace/reference checks, and independent read-only
+  review: passed; no unresolved findings.
+
+The initial focused run passed 144 tests but hit the known sandbox restriction
+on Windows user-information access in two `tsx` subprocess tests
+(`uv_os_get_passwd`). The authorized outside-sandbox rerun passed all 146;
+the full suite also ran outside the sandbox. No test or runtime security
+settings were weakened. All source transport was mocked; database/vault fixtures
+were isolated temporary files. No real credentials or account actions were used.
+
+Coverage proves additive upgrade of a populated pre-Task-015 database, preserved
+legacy text and original import metadata, no unsafe backfill, idempotent and
+source-isolated memberships, enforced foreign keys before/after reopen, explicit
+read ordering, and shared storage cleanup. Application tests prove phase/entry
+ordering, original error propagation, cross-source rejection before writes, and
+retained partial progress. Both CLI paths cover A→X/Y plus B→X/Z yielding three
+items/four memberships, repeat/rename/empty/all-filtered cases, legacy counters and
+Markdown, no deletion after missing entries, no writes after collection failure,
+and recovery of a failed membership for an unchanged item. Output failure retains
+collection/membership rows as well as items.
+
+Files added for Task 015:
+
+- `src/core/models/knowledge-collection.ts`, `collection-membership.ts`
+- `src/storage/collection-repository.ts`, `collection-membership-repository.ts`
+- `src/storage/sqlite/collection-repository.ts`, `collection-membership-repository.ts`
+- `src/collectors/collection-collector.ts`
+- `src/application/sync-collection.ts`, `sync-collection-to-obsidian.ts`
+- `tests/collection-repositories.test.ts`, `sync-collection.test.ts`,
+  `sync-collection-to-obsidian.test.ts`, `youtube-collections.integration.test.ts`
+
+Files changed for Task 015:
+
+- `src/core/models/knowledge-item.ts` (legacy metadata comment)
+- `src/storage/storage.ts`, `src/storage/sqlite/schema.ts`, `src/storage/sqlite/storage.ts`
+- `src/collectors/youtube/youtube-collector.ts`, `src/cli/youtube-sync.ts`
+- `tests/youtube-collector.test.ts`, `tests/youtube-sync.test.ts`,
+  `tests/youtube-sync-obsidian.test.ts`, `tests/youtube-sync-obsidian.integration.test.ts`
+- `README.md`, `src/outputs/obsidian/README.md`, this handoff, and the supplied
+  untracked `prompts/task-015.md` (accepted review clarifications).
+
+Directory layout remains `src/{application,auth,cli,collectors,core/models,outputs,
+storage/sqlite}`, `tests`, `data`, `docs`, and `prompts`; the new files extend the
+existing application/domain/storage boundaries. No dependencies, new commands,
+authentication changes, or specification deviations. The new schema/API and
+legacy behavior are described under Important architecture above. Historical
+memberships require re-sync, and positions/reconciliation/full membership output
+remain deliberately deferred. Existing Task 013/014 work and unrelated local
+deletions were preserved. No commits or pushes were made. Task 016 is not started.
+
+### Historical Task 014 verification
+
+Task 014 implementation validation (2026-10-04), using `ks-youtube-auth` and
+`ks-verify`, against [prompts/task-014.md](../prompts/task-014.md), including the
+accepted review clarifications appended there:
+
+- `npm.cmd install`: passed; dependencies up to date, none added.
+- `npm.cmd test -- tests/cli.test.ts tests/youtube-sync.test.ts tests/youtube-sync.integration.test.ts tests/youtube-sync-obsidian.test.ts tests/youtube-sync-obsidian.integration.test.ts`:
+  133 passed in five files.
+- `npm.cmd test`: 634 passed, 1 intentional Windows skip for POSIX permissions,
+  25 files. Task 014 adds 64 passing cases.
+- `npm.cmd run typecheck`: passed.
+- `npm.cmd run build`: passed.
+- `node dist/cli/index.js` and `node dist/cli/index.js --help`: passed.
+- `node dist/cli/index.js youtube sync --help`: passed.
+- `node dist/cli/index.js youtube sync-obsidian --help`: passed.
+- `npm.cmd exec --offline --package=. -- knowledge-sync --help`: passed.
+- `npm.cmd exec --offline --package=. -- knowledge-sync`: passed.
+
+Coverage includes command registration/help, ID/URL parsing, API-key/OAuth reuse,
+vault/DB precedence and blank values, selected-vault containment through junction
+aliases, unchanged ordinary-sync behavior, exactly-once application delegation,
+cleanup on every result/failure, safe diagnostics for unknown thrown values, and
+partial-result exit status without duplicate fatal messages. Integration tests
+use mocked YouTube transport, real SQLite, and temporary existing vaults. They
+verify retained items from another source, real Markdown output, persistence
+surviving a blocked note destination, and successful later unchanged export.
+Two separate Node process tests prove actual exit codes 0/1. Empty-snapshot
+no-vault-access behavior and collector failure cleanup remain covered.
+
+Initial checks exposed a help-line wrapping assertion and TypeScript return-flow/
+fixture typing issues; these were fixed before passing validation. Child-process
+tests initially hit the sandbox's Windows user-information restriction in `tsx`
+(`uv_os_get_passwd`); approved reruns outside the sandbox passed. Packaged CLI
+startup also passed outside the sandbox after its sandboxed npm invocation stalled
+without output and was stopped. No runtime security or test settings were weakened.
+All transport was mocked; no real credentials, account, database, or vault was used.
+
+Files added:
+
+- `src/cli/obsidian-export-failure.ts`
+- `tests/youtube-sync-obsidian.test.ts`
+- `tests/youtube-sync-obsidian.integration.test.ts`
+
+Files changed for Task 014:
+
+- `src/cli/program.ts`, `src/cli/youtube.ts`, `src/cli/youtube-sync.ts`
+- `tests/cli.test.ts`, `tests/youtube-sync.test.ts` (new help case in the latter)
+- `.env.example`, `README.md`, this handoff
+- `prompts/task-014.md` (accepted review clarifications; supplied untracked)
+
+The existing `src/{application,auth,cli,collectors,core,outputs,storage}`, `tests`,
+`data`, `docs`, and `prompts` layout is unchanged. The diagnostic helper belongs
+to CLI presentation. No dependencies, schema, application, collector, auth, or
+exporter contract changes; no specification deviations. The independent reviewer
+found no actionable implementation/test issues and flagged one duplicated task
+clarification section, which was removed. Its final documentation/evidence review
+also found no unresolved issues. The `ks-verify` workflow passed, including
+`git diff --check`, new-file whitespace, task-reference, clarification-uniqueness,
+and reported-directory checks. Task-entry SHA-256 comparisons confirm all 48
+unassigned source/test/package files are unchanged, including Task 013 work.
+
+Existing Task 013 work and unrelated deletions were preserved. `prompts/task-013.md`
+was already absent at Task 014 entry; references below record its historical
+location. No commits or pushes were made. Task 015 has not started; further work
+requires an explicitly assigned specification.
+
+### Historical Task 013 verification
+
+Task 013 implementation validation (2026-10-04), using `ks-persistence` and
+`ks-verify`, against [prompts/task-013.md](../prompts/task-013.md) and the accepted
+review clarifications appended there:
+
+- `npm.cmd install`: passed; dependencies up to date, none added.
+- `npm.cmd test -- tests/sync-to-obsidian.test.ts tests/sync-to-obsidian.integration.test.ts tests/knowledge-item-repository.test.ts`:
+  50 passed in three files (25 orchestration unit, 8 integration, 17 storage).
+- `npm.cmd test`: 570 passed, 1 intentional Windows skip for POSIX permissions,
+  23 files. Task 013 adds 40 passing cases.
+- `npm.cmd run typecheck`: passed.
+- `npm.cmd run build`: passed.
+- `node dist/cli/index.js`: passed.
+- `node dist/cli/index.js --help`: passed.
+- `node dist/cli/index.js youtube sync --help`: passed.
+- `npm.cmd exec --offline --package=. -- knowledge-sync --help`: passed.
+
+Unit coverage uses deferred promises to prove strict phase order and final export
+settlement, original snapshot/result forwarding, all sync counter categories,
+partial export results, empty snapshots, and unchanged thrown values (including
+objects/undefined) from synchronous throws and asynchronous rejections in every
+phase. Integration tests use temporary SQLite and a temporary vault for mixed
+classification, retained items, duplicate identities, actual Markdown output,
+and persistence surviving failures. Recovery coverage causes a real write failure
+with a directory at one note path, verifies another note still exports, reopens
+SQLite, removes that test obstruction, and proves the unchanged item is exported
+successfully on the later run without output-state tracking. Storage ordering is
+tested with reversed unordered SQLite scans as well as shuffled insertion order.
+No real account, credentials, user database, or vault was used.
+
+Files added:
+
+- `src/application/sync-to-obsidian.ts`
+- `tests/sync-to-obsidian.test.ts`
+- `tests/sync-to-obsidian.integration.test.ts`
+
+Files changed:
+
+- `src/storage/knowledge-item-repository.ts`
+- `src/storage/sqlite/knowledge-item-repository.ts`
+- `tests/knowledge-item-repository.test.ts`
+- `tests/sync.test.ts`, `tests/sync.integration.test.ts`, `tests/youtube-sync.test.ts`
+  (existing repository fixtures adapted to the new required method)
+- `README.md`, `src/outputs/obsidian/README.md`, this handoff
+- `prompts/task-013.md` (accepted clarifications only; supplied untracked at entry)
+
+The existing `src/{application,auth,cli,collectors,core,outputs,storage}`, `tests`,
+`data`, `docs`, and `prompts` layout remains. The new use case sits beside `sync.ts`;
+no directory, dependency, schema, CLI, `sync()`, or exporter behavior changes.
+There are no specification deviations. Independent `ks_reviewer` completion
+review found no actionable code, test, or documentation issues. The `ks-verify`
+workflow passed, including final documentation-link, new-file whitespace,
+directory-structure, and `git diff --check` validation. Git diff confirms the
+schema, package files, CLI, original sync, renderer, path builder, writer, and
+exporters remain unchanged. There are no unresolved findings.
+Pre-existing deletions of `instructions.txt`, `prompts/task-007.md`,
+`prompts/task-012.md`, and `task-004.md` remain untouched. No commits or pushes
+were made. Task 014 has not started.
+
+### Historical Task 012 verification
 
 Task 012 implementation validation (2026-10-02), using `ks-verify`, against
 [prompts/task-012.md](../prompts/task-012.md), including its appended success,
@@ -507,6 +905,19 @@ were changed. Unrelated pre-existing changes were checked against task-entry cop
 
 ## Current checkpoint and repository state
 
+The user authorized preparing a PR after Task 016 completion. A fresh fetch
+confirmed `origin/main` is still `193e837` (Tasks 001–007), and the remote exposes
+only PR refs 1–3. New branch `iteration/task-016-account-sync` starts at the
+Task 012 checkpoint `733345a` and packages completed Tasks 008–016 together.
+The latest checkpoint above contains the PR title/body and scope. Unrelated local
+deletions of `instructions.txt`, `prompts/task-007.md`, `prompts/task-012.md`, and
+`task-004.md` are excluded; no missing specifications were recreated. No runtime
+files changed during preparation after validation. Check Git/upstream and the
+remote PR for final commit, push, and publication state. Earlier no-commit/no-push
+statements record implementation before this explicit PR request.
+
+### Historical Tasks 008–012 checkpoint
+
 The user authorized creating a PR on 2026-10-02. Fetching origin confirmed PR #3
 merged Tasks 005–007 into `origin/main` at `193e837`. Its tree matches the previous
 local Task 007 branch, so a fresh `iteration/task-012-obsidian-export` branch was
@@ -561,10 +972,14 @@ helpers, not application agents or automatic task execution.
 ## Next-session guidance
 
 Read this handoff and the explicitly assigned task specification before changing
-code. Task 012 batch export is complete. The Tasks 008–012 checkpoint branch is
-`iteration/task-012-obsidian-export`; check actual Git/PR state before further work.
+code. Task 016 implementation, validation, documentation, and independent review
+are complete against
+[prompts/task-016.md](../prompts/task-016.md), including accepted review clarifications.
+Tasks 008–016 are packaged for PR on `iteration/task-016-account-sync`;
+check actual Git/upstream/PR state before further work. The latest checkpoint
+contains the prepared PR description and validation evidence.
 Task 010 code and tests were already present at Task 011
 entry; do not infer historical acceptance from their presence. Work only on an
-explicitly assigned task. Account-wide sync, CLI export, sync/export
-and import-state orchestration remain unimplemented and require a new assignment.
-Task 013 has not started.
+explicitly assigned task. Import-state orchestration remains unimplemented.
+A possible next product step is collection-aware Obsidian projection, requiring
+its own specification and assignment. Task 017 is not started or authorized here.

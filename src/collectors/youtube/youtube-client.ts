@@ -121,7 +121,9 @@ export class YouTubeApiClient implements YouTubeClient, YouTubeAccountClient {
         if (!token?.trim()) throw new Error();
       } catch (error) {
         if (error instanceof GoogleAuthError) throw error;
-        throw new YouTubeError('YouTube OAuth access token is unavailable. Check connectivity and Google OAuth configuration.');
+        throw new YouTubeError('YouTube OAuth access token is unavailable. Check connectivity and Google OAuth configuration.', {
+          cause: error, accountFatal: true,
+        });
       }
       headers.Authorization = `Bearer ${token}`;
     }
@@ -140,7 +142,9 @@ export class YouTubeApiClient implements YouTubeClient, YouTubeAccountClient {
     try {
       data = await response.json();
     } catch {
-      throw new YouTubeError(`${context}: HTTP ${response.status}, unreadable JSON response.`);
+      throw new YouTubeError(`${context}: HTTP ${response.status}, unreadable JSON response.`, {
+        accountFatal: response.status === 401,
+      });
     }
     if (!response.ok) {
       const parsed = apiErrorSchema.safeParse(data);
@@ -150,19 +154,22 @@ export class YouTubeApiClient implements YouTubeClient, YouTubeAccountClient {
         'forbidden', 'insufficientPermissions', 'playlistItemsNotAccessible', 'playlistNotFound', 'backendError'];
       const reasons = rawReasons.filter((reason) => knownReasons.includes(reason)).join(', ');
       const detail = reasons ? ` (${reasons})` : '';
+      const accountFatal = response.status === 401 || rawReasons.some((reason) => [
+        'keyInvalid', 'authError', 'invalidCredentials', 'unauthorized', 'quotaExceeded', 'dailyLimitExceeded',
+      ].includes(reason));
       if (auth.kind === 'oauth') {
         const needsLogin = response.status === 401 || (response.status === 403
           && rawReasons.some((reason) => ['authError', 'invalidCredentials', 'unauthorized'].includes(reason)));
         const hint = needsLogin ? 'OAuth authorization failed. Run `knowledge-sync youtube auth login`.'
           : response.status === 403 ? 'API quota or playlist access denied; check quota, account ownership, and read-only permission.'
           : response.status === 404 ? 'Playlist not found or inaccessible.' : 'YouTube API request failed.';
-        throw new YouTubeError(`${context}: HTTP ${response.status}${detail}. ${hint}`);
+        throw new YouTubeError(`${context}: HTTP ${response.status}${detail}. ${hint}`, { accountFatal });
       }
       const hint = response.status === 404 ? 'Playlist not found.'
         : response.status === 401 ? 'Invalid API credentials.'
         : response.status === 403 ? 'Playlist inaccessible or API access denied; check API key and quota.'
         : 'API request failed; check API key and request parameters.';
-      throw new YouTubeError(`${context}: HTTP ${response.status}${detail}. ${hint}`);
+      throw new YouTubeError(`${context}: HTTP ${response.status}${detail}. ${hint}`, { accountFatal });
     }
     return data;
   }
