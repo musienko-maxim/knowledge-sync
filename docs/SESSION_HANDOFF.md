@@ -2,8 +2,10 @@
 
 Updated: 2026-10-09
 
-Latest work: Task 018 membership reconciliation is implemented and verified,
-alongside uncommitted Task 017 changes. The resumed implementation authorization
+Latest work: PR #5 conflict resolution merges `origin/main` into
+`iteration/task-017-18-sync`, preserving the completed Tasks 017 and 018.
+Fresh verification passed; see the current checkpoint below.
+The resumed implementation authorization
 and decisions are recorded in [the Task 018 review](task-018-review.md), which
 supersedes the supplied brief's review-only stopping point. Previous checkpoint:
 [Tasks 008–016 PR preparation](sessions/2026-10-05-tasks-008-016-pr.md).
@@ -1066,9 +1068,31 @@ were changed. Unrelated pre-existing changes were checked against task-entry cop
 
 ## Current checkpoint and repository state
 
-Tasks 017 and 018 are complete and uncommitted on top of local HEAD `392fb44`. The earlier
-PR-preparation record below is historical; this continuation did not fetch or
-verify current remote PR state and did not stage, commit, or push.
+Tasks 017 and 018 are complete in commit `e9a86b7` on
+`iteration/task-017-18-sync`, published as [PR #5](https://github.com/musienko-maxim/knowledge-sync/pull/5).
+The user authorized resolving its conflicts and updating the PR on 2026-10-09.
+Fetched `origin/main` at `a7144bf`, the squash merge of PR #4; its tree exactly
+matches the branch's Task 016 checkpoint `392fb44`. Merging it caused 25 conflicts
+because the squash commit did not retain the original ancestry. Resolution keeps
+the Tasks 017–018 versions and their existing historical-document deletions,
+including two briefs Git automatically reintroduced. Before this handoff update,
+the resolved index and working tree exactly matched `e9a86b7`.
+
+Fresh conflict-resolution verification:
+
+- `npm.cmd install`: passed; no dependencies added. The existing high-severity
+  audit finding remains; no dependency fixes were included.
+- `npm.cmd test`: 951 passed, one expected Windows POSIX-permissions skip, 40 files.
+- `npm.cmd run typecheck` and `npm.cmd run build`: passed.
+- Built CLI startup, top-level help, and `youtube sync`, `sync-obsidian`, and
+  `sync-all` help: passed.
+- `npm.cmd exec --offline --package=. -- knowledge-sync --help`: passed.
+
+No runtime, test, schema, dependency, or directory-layout changes were needed.
+The existing `src/{application,auth,cli,collectors,core/models,outputs/obsidian,storage/sqlite}`,
+`tests`, `data`, `docs`, and `prompts` layout is retained. No specification deviations.
+The earlier PR-preparation record below is historical. Check Git and PR #5 for
+the final merge-commit and publication state.
 
 The user authorized preparing a PR after Task 016 completion. A fresh fetch
 confirmed `origin/main` is still `193e837` (Tasks 001–007), and the remote exposes
@@ -1140,12 +1164,13 @@ Read this handoff and the explicitly assigned task specification before changing
 code. Tasks 017 and 018 implementation, validation, documentation, and independent
 review are complete. The current specification is [prompts/task-018.md](../prompts/task-018.md),
 with accepted implementation decisions in [its review](task-018-review.md).
-Their changes remain uncommitted; preserve unrelated local deletions.
+Their changes are committed in `e9a86b7`; see the current PR #5 checkpoint above.
 The previous checkpoint contains the prepared Tasks 008–016 PR description and
 historical validation evidence; check actual Git/upstream/PR state if assigned
 publication work.
 Task 010 code and tests were already present at Task 011
 entry; do not infer historical acceptance from their presence. Work only on an
 explicitly assigned task. Import-state orchestration remains unimplemented.
-Do not begin the next task without a separate explicit assignment. Current Task 018
-authorization excludes commits and pushes.
+Do not begin the next task without a separate explicit assignment. The later PR #5
+conflict-resolution request authorizes its merge commit and push; Task 018's earlier
+implementation-only authorization is historical.
