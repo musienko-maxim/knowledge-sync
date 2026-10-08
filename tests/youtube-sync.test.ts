@@ -31,11 +31,11 @@ function setup() {
   const storage: Storage = {
     knowledgeItems: { findByIdentity: vi.fn(), listAll: vi.fn(), upsert: vi.fn() },
     collections: { upsert: vi.fn(), listAll: vi.fn() },
-    collectionMemberships: { add: vi.fn(), listAll: vi.fn() },
+    collectionMemberships: { removeStaleForCollection: vi.fn(), add: vi.fn(), listAll: vi.fn() },
     getImported: vi.fn(), recordImport: vi.fn(), close: vi.fn(),
   };
   const open = vi.spyOn(sqlite, 'openStorage').mockReturnValue(storage);
-  const sync = vi.spyOn(application, 'syncCollection').mockResolvedValue({ processed: 7, new: 2, changed: 1, unchanged: 4 });
+  const sync = vi.spyOn(application, 'syncCollection').mockResolvedValue({ processed: 7, new: 2, changed: 1, unchanged: 4, membershipsRemoved: 2 });
   const collect = vi.spyOn(YouTubeCollector.prototype, 'collectCollection');
   const parse = vi.spyOn(parser, 'parsePlaylistId');
   const loadConfig = vi.spyOn(config, 'loadGoogleClientConfig')
@@ -49,7 +49,7 @@ describe('single-playlist composition', () => {
   it.each(['PLone', 'https://www.youtube.com/playlist?list=PLone'])
   ('delegates %s parsing and persistence without collecting or writing independently', async (playlist) => {
     const { storage, sync, collect, parse, loadConfig, provider } = setup();
-    expect(await syncYouTubePlaylist(playlist, { auth: 'api-key' })).toEqual({ processed: 7, new: 2, changed: 1, unchanged: 4 });
+    expect(await syncYouTubePlaylist(playlist, { auth: 'api-key' })).toEqual({ processed: 7, new: 2, changed: 1, unchanged: 4, membershipsRemoved: 2 });
     expect(parse).toHaveBeenCalledExactlyOnceWith(playlist);
     expect(sync).toHaveBeenCalledExactlyOnceWith(expect.any(YouTubeCollector), storage);
     expect(collect).not.toHaveBeenCalled();

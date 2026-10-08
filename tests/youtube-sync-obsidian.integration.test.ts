@@ -91,7 +91,7 @@ it('runs the command through real persistence and full-snapshot export including
   transport();
   const command = cli();
   await command.run(['--db', database, '--vault', vault]);
-  expect(command.output()).toBe('Sync: processed=1 new=1 changed=0 unchanged=0\nExport: attempted=2 succeeded=2 failed=0\n');
+  expect(command.output()).toBe('Sync: processed=1 new=1 changed=0 unchanged=0\nMemberships: removed=0\nExport: attempted=2 succeeded=2 failed=0\nCollections: attempted=1 succeeded=1 failed=0\n');
   expect(command.errors()).toBe('');
   expect(config.loadGoogleClientConfig).not.toHaveBeenCalled();
   await expectClosed();
@@ -129,7 +129,7 @@ it('reports a returned write failure once, closes storage, and exports unchanged
   transport();
   const first = cli();
   await expect(first.run()).rejects.toMatchObject({ exitCode: 1, code: 'knowledge-sync.obsidian-export' });
-  expect(first.output()).toBe('Sync: processed=1 new=1 changed=0 unchanged=0\nExport: attempted=1 succeeded=0 failed=1\n');
+  expect(first.output()).toBe('Sync: processed=1 new=1 changed=0 unchanged=0\nMemberships: removed=0\nExport: attempted=1 succeeded=0 failed=1\nCollections: attempted=1 succeeded=1 failed=0\n');
   expect(first.errors()).toContain('index 0 (source="youtube", sourceId="videoA")');
   expect(first.errors().match(/Export failed at index/g)).toHaveLength(1);
   expect(first.errors()).not.toMatch(/YouTube command failed|fake-/);
@@ -147,17 +147,18 @@ it('reports a returned write failure once, closes storage, and exports unchanged
   transport();
   const later = cli();
   await later.run();
-  expect(later.output()).toBe('Sync: processed=1 new=0 changed=0 unchanged=1\nExport: attempted=1 succeeded=1 failed=0\n');
+  expect(later.output()).toBe('Sync: processed=1 new=0 changed=0 unchanged=1\nMemberships: removed=0\nExport: attempted=1 succeeded=1 failed=0\nCollections: attempted=1 succeeded=1 failed=0\n');
   expect(later.errors()).toBe('');
   expect(await readFile(destination, 'utf8')).toContain('# Video A');
   await expectClosed();
 });
 
-it('returns zero counts for an empty snapshot without creating or validating a nonexistent vault', async () => {
+it('fails collection export for an empty playlist and nonexistent vault', async () => {
   transport(true);
   const command = cli();
-  await command.run(['--vault', join(directory, 'missing')]);
-  expect(command.output()).toBe('Sync: processed=0 new=0 changed=0 unchanged=0\nExport: attempted=0 succeeded=0 failed=0\n');
+  await expect(command.run(['--vault', join(directory, 'missing')])).rejects.toMatchObject({ exitCode: 1, code: 'knowledge-sync.obsidian-export' });
+  expect(command.output()).toBe('Sync: processed=0 new=0 changed=0 unchanged=0\nMemberships: removed=0\nExport: attempted=0 succeeded=0 failed=0\nCollections: attempted=1 succeeded=0 failed=1\n');
+  expect(command.errors()).toContain('Collection export failed at index 0');
   expect(await readdir(directory)).not.toContain('missing');
   await expectClosed();
 });

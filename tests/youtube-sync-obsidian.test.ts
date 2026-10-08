@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as application from '../src/application/sync-collection-to-obsidian.js';
-import type { SyncToObsidianResult } from '../src/application/sync-to-obsidian.js';
+import type { SyncCollectionToObsidianResult } from '../src/application/sync-collection-to-obsidian.js';
 import * as syncApplication from '../src/application/sync.js';
 import * as config from '../src/auth/google-client-config.js';
 import * as oauth from '../src/auth/google-oauth.js';
@@ -37,11 +37,12 @@ function setup() {
   const storage: Storage = {
     knowledgeItems: { findByIdentity: vi.fn(), listAll: vi.fn(), upsert: vi.fn() },
     collections: { upsert: vi.fn(), listAll: vi.fn() },
-    collectionMemberships: { add: vi.fn(), listAll: vi.fn() },
+    collectionMemberships: { removeStaleForCollection: vi.fn(), add: vi.fn(), listAll: vi.fn() },
     getImported: vi.fn(), recordImport: vi.fn(), close: vi.fn(),
   };
-  const result: SyncToObsidianResult = {
-    sync: { processed: 7, new: 2, changed: 1, unchanged: 4 },
+  const result: SyncCollectionToObsidianResult = {
+    collections: { status: 'completed', result: { processed: 1, succeeded: 1, failed: 0, failures: [] } },
+    sync: { membershipsRemoved: 2, processed: 7, new: 2, changed: 1, unchanged: 4 },
     export: { processed: 9, succeeded: 9, failed: 0, failures: [] },
   };
   const open = vi.spyOn(sqlite, 'openStorage').mockReturnValue(storage);
@@ -207,8 +208,9 @@ describe('YouTube to Obsidian composition', () => {
 
   it('returns partial failures unchanged and closes storage without retrying', async () => {
     const { orchestrate, storage } = setup();
-    const result: SyncToObsidianResult = {
-      sync: { processed: 1, new: 1, changed: 0, unchanged: 0 },
+    const result: SyncCollectionToObsidianResult = {
+      collections: { status: 'completed', result: { processed: 1, succeeded: 1, failed: 0, failures: [] } },
+      sync: { processed: 1, new: 1, changed: 0, unchanged: 0, membershipsRemoved: 0 },
       export: {
         processed: 1, succeeded: 0, failed: 1,
         failures: [{ index: 0, item: { source: 'youtube', sourceId: 'one', title: 'One', url: 'https://example.com/one' }, error: new Error('output failed') }],

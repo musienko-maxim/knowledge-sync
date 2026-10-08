@@ -5,7 +5,7 @@ function escapeByte(byte: number): string {
   return `%${byte.toString(16).toUpperCase().padStart(2, '0')}`;
 }
 
-function encodeComponent(value: string, field: 'source' | 'sourceId'): string {
+export function encodeObsidianPathComponent(value: string, field: 'source' | 'sourceId'): string {
   if (value.length === 0) throw new Error(`${field} must not be empty.`);
   // In Unicode mode this matches lone surrogates, but not valid surrogate pairs.
   if (/[\uD800-\uDFFF]/u.test(value)) throw new Error(`${field} must contain well-formed Unicode.`);
@@ -31,5 +31,5 @@ function encodeComponent(value: string, field: 'source' | 'sourceId'): string {
 
 /** Pure identity mapping; metadata never determines a note's persistent path. */
 export function buildObsidianRelativePath(item: KnowledgeItem): string {
-  return `${encodeComponent(item.source, 'source')}/${encodeComponent(item.sourceId, 'sourceId')}.md`;
+  return `${encodeObsidianPathComponent(item.source, 'source')}/${encodeObsidianPathComponent(item.sourceId, 'sourceId')}.md`;
 }

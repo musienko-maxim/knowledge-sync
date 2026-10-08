@@ -59,23 +59,55 @@ the full snapshot allows a later run to attempt failed notes again. It guarantee
 no exact vault mirror, reconciliation, deletion, retry, rollback, or export-state
 tracking. The batch implementation remains independent of storage and the CLI.
 
-Task 015's [syncCollectionToObsidian](../../application/sync-collection-to-obsidian.ts)
-is the single-playlist CLI path. It completes collection, item, and membership
-persistence before reading the same full item snapshot. A relationship-write
-failure skips export; an output failure leaves all completed database writes intact.
-The generic `syncToObsidian` API and the output primitives remain unchanged.
+The single-playlist CLI uses
+[syncCollectionToObsidian](../../application/sync-collection-to-obsidian.ts).
+After persistence and Task 018's per-collection membership reconciliation, Task 017's shared
+[readObsidianSnapshot](../../application/read-obsidian-snapshot.ts) completes item,
+collection, and membership reads before [exportObsidianProjection](export-projection.ts)
+starts output. The pure [projection builder](collection-projection.ts) rejects
+duplicate identities/edges and missing parents before any writes. Sequential reads
+assume a local manual writer; they do not provide cross-process snapshot isolation.
+A relationship-write failure skips export; output failures retain completed database
+writes. The generic `syncToObsidian` API remains item-only and unchanged.
 
 SQLite collections and memberships are authoritative for observed playlist
-associations. Markdown still exposes only the legacy `KnowledgeItem.collection`
-title from the last synchronized playlist, so alternating playlists can change
-that field in a shared video's note. There is one note per item identity, no
-collection pages, and no projection of complete membership yet. Historical
-memberships are populated by re-syncing playlists, never inferred from old titles.
+associations. Item Markdown retains the legacy `KnowledgeItem.collection` title
+from the last synchronized playlist. Collection notes join only complete source/ID
+identities, never that title. Memberships are populated and reconciled by successful
+complete collection syncs; failed collections retain prior edges and additive progress.
+There is one note per item identity and one per collection identity.
 
-Task 016's [syncAccount](../../application/sync-account.ts) optionally invokes one
-final snapshot read and batch export after all playlists. Recoverable playlist
+[Collection paths](collection-path.ts) reuse the existing persistent encoder as
+`<encoded-source>/collections/<encoded-collection-id>.md`; titles do not affect paths.
+[Collection Markdown](collection-markdown.ts) preserves raw front-matter strings
+in source/sourceId/title order, escapes inline headings and labels, uses the
+projection builder's identity-sorted members, and ends with exactly one LF.
+An empty title's heading uses sourceId.
+[Link destinations](markdown-link.ts) URL-encode the literal relative path separately,
+including literal percent signs, and preserve `/` separators. Empty collections
+contain `_No items._`. Existing item paths and Markdown bytes are unchanged.
+
+The projection exports items first, then collections. Individual failures retain
+the original entity/error and allow later writes, including collection writes after
+item failures. Unexpected item-batch exceptions stop the collection phase; unexpected
+collection-batch exceptions retain completed item results and the original error in
+an explicit tagged outcome, including thrown `undefined`. Both CLI commands report
+separate counts and fail if either phase fails. A later run attempts all notes again.
+Collection links may reference failed item writes until a successful rerun.
+
+An empty playlist now creates a collection note, so a nonexistent vault causes an
+export failure. A completely empty projection still performs no filesystem access.
+There is no stale-file deletion or export-state tracking in the output layer;
+existing generated notes are overwritten with the writer's non-atomic semantics.
+Reconciled SQLite memberships disappear from collection links during normal export.
+Items with no memberships and their notes remain. Output failure leaves reconciliation
+committed, so a later successful export recovers the collection projection.
+
+Task 016's [syncAccount](../../application/sync-account.ts) now optionally invokes
+the same full projection once after all playlists. Recoverable playlist
 failures do not suppress that export, including when all playlists fail or
 discovery returns no playlists. Fatal account errors skip export. Snapshot and
 unexpected batch exceptions are retained alongside the accumulated playlist
 results, while individual note failures keep the existing batch result semantics.
-The selected database's entire item snapshot remains the projection source.
+The selected database's entire item/collection/membership snapshot is the projection
+source; completed item results also survive unexpected collection-batch exceptions.

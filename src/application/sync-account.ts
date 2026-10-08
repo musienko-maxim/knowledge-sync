@@ -1,9 +1,11 @@
 import type { AccountSyncSource } from '../collectors/account-sync-source.js';
 import type { KnowledgeCollection } from '../core/models/knowledge-collection.js';
-import { exportObsidianNotes, type ObsidianBatchExportResult } from '../outputs/obsidian/export-notes.js';
+import type { ObsidianBatchExportResult } from '../outputs/obsidian/export-notes.js';
+import { exportObsidianProjection, type CollectionExportOutcome } from '../outputs/obsidian/export-projection.js';
 import { isFatalStorageError } from '../storage/storage-error.js';
 import { syncCollection, type CollectionSyncRepositories } from './sync-collection.js';
 import type { SyncResult } from './sync.js';
+import { readObsidianSnapshot } from './read-obsidian-snapshot.js';
 
 export interface PlaylistSyncFailure {
   playlistId: string;
@@ -14,13 +16,16 @@ export interface PlaylistSyncFailure {
 export type AccountExportOutcome =
   | { status: 'not-requested' }
   | { status: 'skipped' }
-  | { status: 'completed'; result: ObsidianBatchExportResult }
-  | { status: 'failed'; stage: 'snapshot' | 'batch'; error: unknown };
+  | { status: 'completed'; result: ObsidianBatchExportResult; collections?: CollectionExportOutcome }
+  | { status: 'failed'; stage: 'snapshot' | 'batch'; error: unknown }
+  | { status: 'failed'; stage: 'collections'; result: ObsidianBatchExportResult; error: unknown };
 
 export interface AccountSyncResult {
   playlists: { discovered: number; succeeded: number; failed: number; unattempted: number };
   /** Processing events from successful playlists only, excluding failed partial writes. */
   items: SyncResult;
+  /** Stale memberships removed by successfully completed collection syncs only. */
+  membershipsRemoved: number;
   failures: PlaylistSyncFailure[];
   fatal?: { stage: 'discovery' | 'playlist'; error: unknown };
   export: AccountExportOutcome;
@@ -35,6 +40,7 @@ export async function syncAccount(
   const result: AccountSyncResult = {
     playlists: { discovered: 0, succeeded: 0, failed: 0, unattempted: 0 },
     items: { processed: 0, new: 0, changed: 0, unchanged: 0 },
+    membershipsRemoved: 0,
     failures: [],
     export: { status: vaultPath === undefined ? 'not-requested' : 'skipped' },
   };
@@ -56,6 +62,7 @@ export async function syncAccount(
       result.items.new += synced.new;
       result.items.changed += synced.changed;
       result.items.unchanged += synced.unchanged;
+      result.membershipsRemoved += synced.membershipsRemoved;
     } catch (error) {
       result.playlists.failed++;
       result.failures.push({ playlistId: collection.sourceId, playlistTitle: collection.title, error });
@@ -66,15 +73,18 @@ export async function syncAccount(
     }
   }
   if (vaultPath !== undefined) {
-    let items;
+    let snapshot;
     try {
-      items = await repositories.knowledgeItems.listAll();
+      snapshot = await readObsidianSnapshot(repositories);
     } catch (error) {
       result.export = { status: 'failed', stage: 'snapshot', error };
       return result;
     }
     try {
-      result.export = { status: 'completed', result: await exportObsidianNotes(vaultPath, items) };
+      const projection = await exportObsidianProjection(vaultPath, snapshot);
+      result.export = projection.collections.status === 'failed'
+        ? { status: 'failed', stage: 'collections', result: projection.items, error: projection.collections.error }
+        : { status: 'completed', result: projection.items, collections: projection.collections };
     } catch (error) {
       result.export = { status: 'failed', stage: 'batch', error };
     }

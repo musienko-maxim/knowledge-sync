@@ -106,7 +106,7 @@ describe('YouTube sync command through real composition and SQLite', () => {
       'youtube', 'sync', 'https://www.youtube.com/playlist?list=PL123', '--db', databasePath,
     ], { from: 'user' });
 
-    expect(cli.output()).toBe('Processed 2 items.\n');
+    expect(cli.output()).toBe('Processed 2 items.\nMemberships: removed=0\n');
     expect(cli.errors()).toBe('');
     expect(sqliteStorage.openStorage).toHaveBeenCalledExactlyOnceWith(databasePath);
     await expectClosed();
@@ -140,7 +140,7 @@ describe('YouTube sync command through real composition and SQLite', () => {
       .mockResolvedValueOnce(Response.json({ items: [] }));
     const cli = command();
     await cli.run();
-    expect(cli.output()).toBe('Processed 0 items.\n');
+    expect(cli.output()).toBe('Processed 0 items.\nMemberships: removed=0\n');
     await expectClosed();
     expectNoPersistedItems();
   });
@@ -153,7 +153,7 @@ describe('YouTube sync command through real composition and SQLite', () => {
     const request = transport();
     const cli = command();
     await cli.run(['--auth', 'oauth']);
-    expect(cli.output()).toBe('Processed 2 items.\n');
+    expect(cli.output()).toBe('Processed 2 items.\nMemberships: removed=0\n');
     expect(cli.errors()).toBe('');
     expect(token).toHaveBeenCalledTimes(3);
     for (const [input, init] of request.mock.calls) {

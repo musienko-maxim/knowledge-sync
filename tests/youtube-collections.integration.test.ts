@@ -8,6 +8,8 @@ import * as sqlite from '../src/storage/sqlite/storage.js';
 import type { Storage } from '../src/storage/storage.js';
 import * as output from '../src/outputs/obsidian/export-notes.js';
 import { buildObsidianRelativePath } from '../src/outputs/obsidian/note-path.js';
+import * as config from '../src/auth/google-client-config.js';
+import * as oauth from '../src/auth/google-oauth.js';
 
 const realOpen = sqlite.openStorage;
 let directory: string;
@@ -52,7 +54,7 @@ function transport(title: string, ids: string[], filtered = false) {
       : ids.map((id) => ({ snippet: { title: `Video ${id}` }, contentDetails: { videoId: id } })) }));
 }
 
-function command(kind: 'sync' | 'sync-obsidian', id: string) {
+function command(kind: 'sync' | 'sync-obsidian', id: string, auth = 'api-key') {
   let stdout = '';
   let stderr = '';
   const program = createProgram();
@@ -64,7 +66,7 @@ function command(kind: 'sync' | 'sync-obsidian', id: string) {
   }
   configure(program);
   return {
-    run: () => program.parseAsync(['youtube', kind, id], { from: 'user' }),
+    run: () => program.parseAsync(['youtube', kind, id, '--auth', auth], { from: 'user' }),
     stdout: () => stdout, stderr: () => stderr,
   };
 }
@@ -104,7 +106,17 @@ it.each(['sync', 'sync-obsidian'] as const)
   if (kind === 'sync-obsidian') {
     expect(second.stdout()).toContain('Sync: processed=2 new=1 changed=1 unchanged=0');
     expect(await readFile(join(vault, buildObsidianRelativePath(initial.items[0]!)), 'utf8')).toContain('collection: "B"');
-    expect(await readdir(join(vault, 'youtube'))).toHaveLength(3);
+    expect(await readdir(join(vault, 'youtube'))).toHaveLength(4);
+    const notes = await readdir(join(vault, 'youtube', 'collections'));
+    expect(notes).toEqual(['%50%4C%41.md', '%50%4C%42.md']);
+    const noteA = await readFile(join(vault, 'youtube/collections/%50%4C%41.md'), 'utf8');
+    const noteB = await readFile(join(vault, 'youtube/collections/%50%4C%42.md'), 'utf8');
+    expect(noteA).toContain('(../%2558.md)');
+    expect(noteA).toContain('(../%2559.md)');
+    expect(noteA).not.toContain('(../%255A.md)');
+    expect(noteB).toContain('(../%2558.md)');
+    expect(noteB).toContain('(../%255A.md)');
+    expect(noteB).not.toContain('(../%2559.md)');
   } else expect(await readdir(vault)).toEqual([]);
 
   transport('B', ['X', 'Z']);
@@ -113,18 +125,24 @@ it.each(['sync', 'sync-obsidian'] as const)
   expect(await snapshot()).toEqual(initial);
   if (kind === 'sync-obsidian') expect(repeated.stdout()).toContain('new=0 changed=0 unchanged=2');
 
-  // Metadata changes and a missing Y never remove relationships or duplicate A.
+  // A complete new snapshot removes only A's stale edge; its item is retained.
   transport('Renamed A', ['X']);
   const renamed = command(kind, 'PLA');
   await renamed.run();
   const final = await snapshot();
   expect(final.items).toHaveLength(3);
   expect(final.collections).toEqual([{ source: 'youtube', sourceId: 'PLA', title: 'Renamed A' }, initial.collections[1]]);
-  expect(final.memberships).toEqual(relationships);
+  expect(final.memberships).toEqual(relationships.filter((edge) => edge.itemSourceId !== 'Y'));
+  expect(renamed.stdout()).toContain('Memberships: removed=1');
   expect(final.items[0]!.collection).toBe('Renamed A');
   if (kind === 'sync-obsidian') {
     expect(renamed.stdout()).toContain('new=0 changed=1 unchanged=0');
     expect(await readFile(join(vault, buildObsidianRelativePath(final.items[0]!)), 'utf8')).toContain('collection: "Renamed A"');
+    const collectionNote = await readFile(join(vault, 'youtube/collections/%50%4C%41.md'), 'utf8');
+    expect(collectionNote).toContain('# Renamed A');
+    expect(collectionNote).not.toContain('(../%2559.md)');
+    expect(await readFile(join(vault, buildObsidianRelativePath(final.items[1]!)), 'utf8')).toContain('# Video Y');
+    expect(await readdir(join(vault, 'youtube', 'collections'))).toHaveLength(2);
   }
   // One metadata + one item-page request per run, no discovery request.
   expect(fetch).toHaveBeenCalledTimes(8);
@@ -146,7 +164,11 @@ it.each(['sync', 'sync-obsidian'] as const)
   expect(await snapshot()).toEqual({
     collections: [{ source: 'youtube', sourceId: 'PLA', title: 'Renamed empty' }], items: [], memberships: [],
   });
-  expect(await readdir(vault)).toEqual([]);
+  if (kind === 'sync-obsidian') {
+    const note = await readFile(join(vault, 'youtube/collections/%50%4C%41.md'), 'utf8');
+    expect(note).toContain('# Renamed empty');
+    expect(note).toContain('_No items._');
+  } else expect(await readdir(vault)).toEqual([]);
   expect(fetch).toHaveBeenCalledTimes(4);
 });
 
@@ -197,4 +219,80 @@ it.each(['sync', 'sync-obsidian'] as const)
   expect(final.items).toHaveLength(3);
   expect(final.memberships.map((membership) => membership.itemSourceId)).toEqual(['X', 'Y', 'Z']);
   if (kind === 'sync-obsidian') expect(recovered.stdout()).toContain('new=1 changed=0 unchanged=2');
+});
+
+it.each((['sync', 'sync-obsidian'] as const).flatMap((kind) =>
+  (['api-key', 'oauth'] as const).map((auth) => ({ kind, auth }))))
+('reconciles complete normalized snapshots with $kind using $auth, retaining data on failed pagination', async ({ kind, auth }) => {
+  if (auth === 'oauth') {
+    vi.stubEnv('YOUTUBE_API_KEY', undefined);
+    vi.spyOn(config, 'loadGoogleClientConfig').mockResolvedValue({ client_id: 'fake-id', client_secret: 'fake-secret' });
+    vi.spyOn(oauth, 'createAccessTokenProvider').mockReturnValue(vi.fn(async () => 'fake-access'));
+  }
+  transport('A', ['X', 'Y', 'Z']);
+  await command(kind, 'PLA', auth).run();
+  const initial = await snapshot();
+  vi.mocked(fetch)
+    .mockResolvedValueOnce(Response.json({ items: [{ snippet: { title: 'A' } }] }))
+    .mockResolvedValueOnce(Response.json({ items: [{ snippet: { title: 'Video X' }, contentDetails: { videoId: 'X' } }], nextPageToken: 'next' }))
+    .mockRejectedValueOnce(new Error('fake-secret transport failure'));
+  const failed = command(kind, 'PLA', auth);
+  await expect(failed.run()).rejects.toMatchObject({ exitCode: 1 });
+  expect(await snapshot()).toEqual(initial);
+  expect(failed.stdout()).toBe('');
+  expect(failed.stderr()).not.toContain('fake-secret');
+
+  transport('A', ['X', 'X', 'W']);
+  const mixed = command(kind, 'PLA', auth);
+  await mixed.run();
+  expect(mixed.stdout()).toContain('Memberships: removed=2');
+  if (kind === 'sync-obsidian') expect(mixed.stdout()).toContain('processed=3 new=1 changed=0 unchanged=2');
+  const reconciled = await snapshot();
+  expect(reconciled.memberships.map((edge) => edge.itemSourceId)).toEqual(['W', 'X']);
+  expect(reconciled.items.map((item) => item.sourceId)).toEqual(['W', 'X', 'Y', 'Z']);
+  transport('A', ['X', 'X', 'W']);
+  const repeated = command(kind, 'PLA', auth);
+  await repeated.run();
+  expect(repeated.stdout()).toContain('Memberships: removed=0');
+  expect(await snapshot()).toEqual(reconciled);
+
+  // Existing collector filtering defines the normalized authoritative snapshot.
+  transport('A', [], true);
+  const empty = command(kind, 'PLA', auth);
+  await empty.run();
+  expect(empty.stdout()).toContain('Memberships: removed=2');
+  const final = await snapshot();
+  expect(final.memberships).toEqual([]);
+  expect(final.items).toEqual(reconciled.items);
+  expect(final.collections).toEqual(reconciled.collections);
+  if (kind === 'sync-obsidian') {
+    expect(await readFile(join(vault, 'youtube/collections/%50%4C%41.md'), 'utf8')).toContain('_No items._');
+    for (const item of final.items) {
+      expect(await readFile(join(vault, buildObsidianRelativePath(item)), 'utf8')).toContain(`# ${item.title}`);
+    }
+  }
+});
+
+it('keeps reconciliation committed after collection export fails and recovers on the next export', async () => {
+  transport('A', ['X', 'Y']);
+  await command('sync-obsidian', 'PLA').run();
+  const note = join(vault, 'youtube/collections/%50%4C%41.md');
+  const itemNote = join(vault, 'youtube/%59.md');
+  const retainedText = await readFile(itemNote, 'utf8');
+  await rm(note);
+  await mkdir(note);
+  transport('A', ['X']);
+  const failed = command('sync-obsidian', 'PLA');
+  await expect(failed.run()).rejects.toMatchObject({ exitCode: 1, code: 'knowledge-sync.obsidian-export' });
+  expect(failed.stdout()).toContain('Memberships: removed=1');
+  expect((await snapshot()).memberships).toEqual([relationships[0]]);
+  expect(await readFile(itemNote, 'utf8')).toBe(retainedText);
+  await rm(note, { recursive: true });
+  transport('A', ['X']);
+  const recovered = command('sync-obsidian', 'PLA');
+  await recovered.run();
+  expect(recovered.stdout()).toContain('Memberships: removed=0');
+  expect(await readFile(note, 'utf8')).toContain('(../%2558.md)');
+  expect(await readFile(note, 'utf8')).not.toContain('(../%2559.md)');
+  expect(await readFile(itemNote, 'utf8')).toBe(retainedText);
 });
