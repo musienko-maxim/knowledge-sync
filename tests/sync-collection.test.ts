@@ -19,7 +19,11 @@ function setup(items: KnowledgeItem[] = [first, second]) {
       listAll: vi.fn(async () => [...persisted.values()]),
     },
     collections: { upsert: vi.fn<CollectionSyncRepositories['collections']['upsert']>().mockResolvedValue(), listAll: vi.fn() },
-    collectionMemberships: { add: vi.fn<CollectionSyncRepositories['collectionMemberships']['add']>().mockResolvedValue(), listAll: vi.fn() },
+    collectionMemberships: {
+      add: vi.fn<CollectionSyncRepositories['collectionMemberships']['add']>().mockResolvedValue(),
+      listAll: vi.fn(),
+      removeStaleForCollection: vi.fn<CollectionSyncRepositories['collectionMemberships']['removeStaleForCollection']>().mockResolvedValue(0),
+    },
   } satisfies CollectionSyncRepositories;
   return { collector, repositories, persisted };
 }
@@ -33,22 +37,31 @@ function deferred<T>() {
 describe('syncCollection', () => {
   it('persists metadata, items, and memberships, retaining entry-based classification', async () => {
     const { collector, repositories } = setup([first, first, { ...first, title: 'Updated' }, second]);
-    expect(await syncCollection(collector, repositories)).toEqual({ processed: 4, new: 2, unchanged: 1, changed: 1 });
+    repositories.collectionMemberships.removeStaleForCollection.mockResolvedValue(3);
+    expect(await syncCollection(collector, repositories)).toEqual({ processed: 4, new: 2, unchanged: 1, changed: 1, membershipsRemoved: 3 });
     expect(collector.collectCollection).toHaveBeenCalledExactlyOnceWith();
     expect(repositories.collections.upsert).toHaveBeenCalledExactlyOnceWith(collection);
     expect(repositories.collectionMemberships.add.mock.calls).toEqual(['one', 'one', 'one', 'two'].map((itemSourceId) => [{
       source: 'example', collectionSourceId: 'collection-a', itemSourceId,
     }]));
     expect(repositories.knowledgeItems.listAll).not.toHaveBeenCalled();
+    expect(repositories.collectionMemberships.removeStaleForCollection).toHaveBeenCalledExactlyOnceWith(
+      { source: collection.source, sourceId: collection.sourceId },
+      [{ source: first.source, sourceId: first.sourceId }, { source: second.source, sourceId: second.sourceId }],
+    );
   });
 
-  it('persists an empty collection without performing item or membership operations', async () => {
+  it('persists an empty collection and reconciles against an empty desired membership set', async () => {
     const { collector, repositories } = setup([]);
-    expect(await syncCollection(collector, repositories)).toEqual({ processed: 0, new: 0, changed: 0, unchanged: 0 });
+    repositories.collectionMemberships.removeStaleForCollection.mockResolvedValue(2);
+    expect(await syncCollection(collector, repositories)).toEqual({ processed: 0, new: 0, changed: 0, unchanged: 0, membershipsRemoved: 2 });
     expect(repositories.collections.upsert).toHaveBeenCalledExactlyOnceWith(collection);
     expect(repositories.knowledgeItems.findByIdentity).not.toHaveBeenCalled();
     expect(repositories.knowledgeItems.upsert).not.toHaveBeenCalled();
     expect(repositories.collectionMemberships.add).not.toHaveBeenCalled();
+    expect(repositories.collectionMemberships.removeStaleForCollection).toHaveBeenCalledExactlyOnceWith(
+      { source: collection.source, sourceId: collection.sourceId }, [],
+    );
   });
 
   it('awaits complete collection, collection persistence, each item, and every membership before success', async () => {
@@ -57,6 +70,8 @@ describe('syncCollection', () => {
     const savedCollection = deferred<void>();
     const savedItem = deferred<void>();
     const savedMembership = deferred<void>();
+    const reconciled = deferred<number>();
+    const reconciliationStarted = deferred<void>();
     const collectionStarted = deferred<void>();
     const itemStarted = deferred<void>();
     const membershipStarted = deferred<void>();
@@ -64,6 +79,9 @@ describe('syncCollection', () => {
     repositories.collections.upsert.mockImplementation(() => { collectionStarted.resolve(); return savedCollection.promise; });
     repositories.knowledgeItems.upsert.mockImplementation(() => { itemStarted.resolve(); return savedItem.promise; });
     repositories.collectionMemberships.add.mockImplementation(() => { membershipStarted.resolve(); return savedMembership.promise; });
+    repositories.collectionMemberships.removeStaleForCollection.mockImplementation(() => {
+      reconciliationStarted.resolve(); return reconciled.promise;
+    });
     let settled = false;
     const running = syncCollection(collector, repositories).then((result) => { settled = true; return result; });
     expect(repositories.collections.upsert).not.toHaveBeenCalled();
@@ -77,8 +95,12 @@ describe('syncCollection', () => {
     savedItem.resolve();
     await membershipStarted.promise;
     expect(settled).toBe(false);
+    expect(repositories.collectionMemberships.removeStaleForCollection).not.toHaveBeenCalled();
     savedMembership.resolve();
-    expect(await running).toEqual({ processed: 1, new: 1, changed: 0, unchanged: 0 });
+    await reconciliationStarted.promise;
+    expect(settled).toBe(false);
+    reconciled.resolve(2);
+    expect(await running).toEqual({ processed: 1, new: 1, changed: 0, unchanged: 0, membershipsRemoved: 2 });
   });
 
   it('waits for one membership before looking up or writing the next entry', async () => {
@@ -93,7 +115,7 @@ describe('syncCollection', () => {
     expect(repositories.knowledgeItems.findByIdentity).toHaveBeenCalledExactlyOnceWith(first.source, first.sourceId);
     expect(repositories.knowledgeItems.upsert).toHaveBeenCalledExactlyOnceWith(first);
     savedMembership.resolve();
-    expect(await running).toEqual({ processed: 2, new: 2, changed: 0, unchanged: 0 });
+    expect(await running).toEqual({ processed: 2, new: 2, changed: 0, unchanged: 0, membershipsRemoved: 0 });
   });
 
   it('rejects a later cross-source item before any persistence', async () => {
@@ -103,6 +125,7 @@ describe('syncCollection', () => {
     expect(repositories.knowledgeItems.findByIdentity).not.toHaveBeenCalled();
     expect(repositories.knowledgeItems.upsert).not.toHaveBeenCalled();
     expect(repositories.collectionMemberships.add).not.toHaveBeenCalled();
+    expect(repositories.collectionMemberships.removeStaleForCollection).not.toHaveBeenCalled();
   });
 
   it('uses collection identity rather than legacy item collection text for memberships', async () => {
@@ -111,6 +134,9 @@ describe('syncCollection', () => {
     expect(repositories.collectionMemberships.add).toHaveBeenCalledExactlyOnceWith({
       source: 'example', collectionSourceId: 'collection-a', itemSourceId: 'one',
     });
+    expect(repositories.collectionMemberships.removeStaleForCollection).toHaveBeenCalledExactlyOnceWith(
+      { source: 'example', sourceId: 'collection-a' }, [{ source: 'example', sourceId: 'one' }],
+    );
   });
 
   for (const phase of ['collect', 'collection', 'lookup', 'item', 'membership'] as const) {
@@ -128,6 +154,7 @@ describe('syncCollection', () => {
       expect(repositories.knowledgeItems.upsert).toHaveBeenCalledTimes(['item', 'membership'].includes(phase) ? 1 : 0);
       expect(repositories.collectionMemberships.add).toHaveBeenCalledTimes(phase === 'membership' ? 1 : 0);
       expect([...persisted.values()]).toEqual(phase === 'membership' ? [first] : []);
+      expect(repositories.collectionMemberships.removeStaleForCollection).not.toHaveBeenCalled();
     });
   }
 
@@ -142,8 +169,19 @@ describe('syncCollection', () => {
     await expect(syncCollection(collector, repositories)).rejects.toBe(error);
     expect([...persisted.values()]).toEqual(phase === 'membership' ? [first, second] : [first]);
     expect(repositories.knowledgeItems.findByIdentity).toHaveBeenCalledTimes(2);
+    expect(repositories.collectionMemberships.removeStaleForCollection).not.toHaveBeenCalled();
     expect(repositories.collectionMemberships.add.mock.calls[0]).toEqual([{
       source: 'example', collectionSourceId: 'collection-a', itemSourceId: 'one',
     }]);
+  });
+
+  it.each([new Error('removal failure'), { reason: 'removal failure' }, undefined])
+  ('propagates the original reconciliation failure after retaining additive writes (%j)', async (error) => {
+    const { collector, repositories, persisted } = setup();
+    repositories.collectionMemberships.removeStaleForCollection.mockRejectedValue(error);
+    await expect(syncCollection(collector, repositories)).rejects.toBe(error);
+    expect([...persisted.values()]).toEqual([first, second]);
+    expect(repositories.collectionMemberships.add).toHaveBeenCalledTimes(2);
+    expect(repositories.collectionMemberships.removeStaleForCollection).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,5 +1,5 @@
 import { Command, Option } from 'commander';
-import type { SyncToObsidianResult } from '../application/sync-to-obsidian.js';
+import type { SyncCollectionToObsidianResult } from '../application/sync-collection-to-obsidian.js';
 import { GoogleAuthError } from '../auth/google-client-config.js';
 import { YouTubeError } from '../collectors/youtube/youtube-error.js';
 import { youtubeCommands, type YouTubeCommands } from './youtube.js';
@@ -8,6 +8,7 @@ import { formatObsidianExportFailure } from './obsidian-export-failure.js';
 import type { YouTubeSyncAllOptions } from './youtube-sync-all.js';
 import type { AccountSyncResult } from '../application/sync-account.js';
 import { formatAccountSyncResult } from './account-sync-output.js';
+import { formatCollectionExportOutcome } from './collection-export-output.js';
 
 export function createProgram(commands: YouTubeCommands = youtubeCommands): Command {
   const program = new Command()
@@ -48,22 +49,27 @@ export function createProgram(commands: YouTubeCommands = youtubeCommands): Comm
     .action(action(async (playlist: string, options: YouTubeSyncOptions) => {
       const result = await commands.sync(playlist, options);
       write(`Processed ${result.processed} items.`);
+      write(`Memberships: removed=${result.membershipsRemoved}`);
     }));
   youtube.command('sync-obsidian <playlist>')
-    .description('Sync a YouTube playlist to SQLite and export all persisted items to Obsidian')
+    .description('Sync a YouTube playlist to SQLite and export all persisted items and collections to Obsidian')
     .addOption(new Option('--auth <mode>', 'authentication mode').choices(['api-key', 'oauth']).default('api-key'))
     .option('--db <path>', 'SQLite path (overrides DATABASE_PATH; default: ./data/knowledge-sync.sqlite)')
     .option('--vault <path>', 'existing Obsidian vault (overrides OBSIDIAN_VAULT_PATH; required via option or environment)')
     .action(async (playlist: string, options: YouTubeSyncObsidianOptions) => {
-      let result: SyncToObsidianResult;
+      let result: SyncCollectionToObsidianResult;
       try { result = await commands.syncObsidian(playlist, options); } catch (error) { return fail(error); }
       write(`Sync: processed=${result.sync.processed} new=${result.sync.new} changed=${result.sync.changed} unchanged=${result.sync.unchanged}`);
+      write(`Memberships: removed=${result.sync.membershipsRemoved}`);
       write(`Export: attempted=${result.export.processed} succeeded=${result.export.succeeded} failed=${result.export.failed}`);
       for (const failure of result.export.failures) {
         program.configureOutput().writeErr?.(formatObsidianExportFailure(failure) + '\n');
       }
+      const collections = formatCollectionExportOutcome(result.collections);
+      if (collections.output) program.configureOutput().writeOut?.(collections.output);
+      if (collections.errors) program.configureOutput().writeErr?.(collections.errors);
       // Outside the fatal-error catch: exitOverride must not turn this into a second error.
-      if (result.export.failed > 0) {
+      if (result.export.failed > 0 || collections.failed) {
         program.error('Obsidian export incomplete; successful SQLite writes remain committed.',
           { exitCode: 1, code: 'knowledge-sync.obsidian-export' });
       }

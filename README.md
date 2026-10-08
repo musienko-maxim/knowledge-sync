@@ -27,7 +27,9 @@ Task 014 exposes this through `youtube sync-obsidian`, reporting sync/export
 statistics and non-zero status for incomplete export. Task 015 adds persistent
 collections and many-to-many memberships to both single-playlist commands.
 Task 016 adds OAuth-only account-wide synchronization through `youtube sync-all`,
-with an optional single final Obsidian export. Import recording remains deferred.
+with an optional single final Obsidian export. Task 017 adds deterministic collection
+notes linked to existing item notes in both export commands. Task 018 reconciles
+stale memberships after each complete successful playlist sync. Import recording remains deferred.
 
 ## Development
 
@@ -80,6 +82,7 @@ node dist/cli/index.js youtube sync PLxxxxxxxx --auth oauth --db D:\data\knowled
 
 Authentication is explicit (`api-key` by default, or `oauth`); failures never
 trigger a fallback to another mode. Successful runs print `Processed N items.`
+and a separate `Memberships: removed=N` line.
 The count is collected entries processed, including duplicate identities, rather
 than new or changed rows. Existing items are upserted; missing items are retained.
 Collection failure writes no items, collections, or memberships. A persistence
@@ -122,7 +125,9 @@ API credential rejection, quota exhaustion, and structured SQLite full-disk, I/O
 corruption, invalid-database, read-only, or cannot-open errors stop further work
 and suppress export. Initial setup/discovery failures start no playlist sync.
 Previously completed work and failures remain reportable after a late fatal error;
-remaining playlists are counted as unattempted. No automatic retry or rollback occurs.
+remaining playlists are counted as unattempted. There is no automatic retry or global
+rollback. Each successful playlist keeps its reconciliation; failed or unattempted
+playlists retain their previous memberships plus any earlier additive progress.
 
 When requested and no fatal error interrupted the run, one snapshot read and one
 batch export follow all playlist attempts—even if every playlist failed or none
@@ -136,11 +141,14 @@ Example summary:
 ```text
 Playlists: discovered=3 succeeded=2 failed=1 unattempted=0
 Items: processed=4 new=3 changed=1 unchanged=0
+Memberships: removed=2
 Export: attempted=3 succeeded=3 failed=0
+Collections: attempted=2 succeeded=2 failed=0
 ```
 
 Item counters sum processing events from **successfully completed playlists only**;
 they exclude partial writes from failed playlists and are not unique video counts.
+Membership removal counts likewise include only successfully reconciled playlists.
 The legacy collection title still affects classification, so a shared video can
 count as changed on repeated account runs. Failure diagnostics quote/escape
 playlist identities and titles and do not dump unknown errors or credential causes.
@@ -159,12 +167,27 @@ persist the collection, then sequentially classify/upsert each item and add its
 membership. An empty playlist, including one with no usable entries, still
 persists its collection and updates its title. A persistence failure stops later
 entries and skips export without rolling back earlier writes. A later run can
-repair a missing membership even when the item itself is unchanged. Missing
-items, playlists, and memberships are retained; this is observed membership
-history, not reconciliation with current playlist contents.
+repair a missing membership even when the item itself is unchanged.
+
+Only after all collection, item, and current membership writes succeed does
+`syncCollection()` remove stale memberships for that collection. The desired set
+uses source plus item ID, deduplicating repeated entries without changing item
+counters. A successful empty or all-filtered normalized snapshot removes every
+membership in that collection. Collector errors, including failed pagination or
+inaccessible playlists, never authorize removal. Existing collector filtering is
+unchanged: reconciliation describes the complete normalized snapshot, not raw
+unusable API entries.
+
+The destructive phase runs in a short SQLite transaction: a failed removal restores
+all deletions in that phase while retaining earlier additive writes. It uses the
+existing composite index and bounded queries, without a schema change or a transaction
+around the whole sync. Items, collections, import metadata, other collections'
+memberships, and Obsidian files are retained. Absence from account discovery does
+not authorize removal; the schema has no account-ownership provenance. Legacy
+`KnowledgeItem.collection` text is never used for reconciliation.
 
 `openStorage()` exposes `collections.upsert/listAll` and
-`collectionMemberships.add/listAll` on the existing connection. SQLite enforces
+`collectionMemberships.add/listAll/removeStaleForCollection` on the existing connection. SQLite enforces
 same-source composite foreign keys to existing collections and items, and a
 unique relationship triple. Lists are ordered by source and identity components.
 Playlist position and repeated occurrences within one playlist are not modeled.
@@ -178,8 +201,8 @@ recovered from it. Re-sync playlists to populate their authoritative relationshi
 the last synchronized playlist title. Existing classification and Markdown still
 include it, so alternating playlists can mark a shared video changed and update
 its displayed collection. It cannot express complete membership and never
-creates, replaces, or deletes the separate relationships. Obsidian collection
-pages and a projection of all memberships are deferred.
+creates, replaces, or deletes the separate relationships. Collection notes use only
+these authoritative relationships, never the legacy title field.
 
 ## Playlist sync and Obsidian export
 
@@ -189,7 +212,7 @@ node dist/cli/index.js youtube sync-obsidian PL123 --auth oauth --db "D:\data\kn
 ```
 
 The separate `youtube sync-obsidian <playlist>` command collects and persists the
-playlist, then attempts export of **every item in the selected database**, including
+playlist, then attempts export of **every item and collection in the selected database**, including
 other playlists/sources and unchanged items. Ordinary `youtube sync` remains
 SQLite-only and does not accept `--vault`.
 
@@ -208,10 +231,12 @@ Example output (counts may differ because export covers persisted identities):
 
 ```text
 Sync: processed=12 new=2 changed=1 unchanged=9
+Memberships: removed=2
 Export: attempted=15 succeeded=14 failed=1
+Collections: attempted=3 succeeded=3 failed=0
 ```
 
-Full success exits 0. Any export failures still print both statistics lines,
+Full success exits 0. Individual export failures still print separate item and collection counts,
 report each failed snapshot index (zero-based), quoted identity, and safe reason
 to stderr, and exit 1. Fatal configuration/auth/collection/storage errors also
 exit 1, using existing credential-safe diagnostics. Arbitrary error messages,
@@ -221,9 +246,10 @@ results or fatal application failures.
 SQLite remains the source of truth; output failure does not undo successful
 persistence. A later successful sync attempts unchanged items again. Generated
 notes overwrite existing content at their paths, including local edits. There
-is no retry, rollback, reconciliation, or deletion. An empty database snapshot
-returns zero export counts without accessing the vault, so that result alone
-does not prove a configured vault is usable.
+is no automatic retry, output rollback, vault scanning, or file deletion. A completely empty projection
+(no items or collections) returns zero counts without accessing the vault. An empty
+playlist still produces a collection note: unlike the earlier item-only behavior,
+`sync-obsidian` with an empty playlist and a nonexistent vault now fails.
 
 ## Markdown rendering
 
@@ -334,7 +360,7 @@ ascending `source`, then `sourceId` order. Duplicate collected identities resolv
 to their final stored value, so sync and export entry counts can differ.
 
 This full projection is an export policy, not a guarantee that the vault exactly
-mirrors SQLite: individual writes can fail and no reconciliation/deletion occurs.
+mirrors SQLite: individual writes can fail and no filesystem cleanup occurs.
 An item whose export fails remains persisted and will be attempted on a later
 successful sync even if classified unchanged. There is no durable export-state
 tracking or import recording. Existing notes are overwritten, including local
@@ -348,9 +374,41 @@ There are no retries, rollback, compensating writes, or transactions spanning
 SQLite and the filesystem. Empty snapshots use the normal exporter and access
 no vault. This generic use case remains available. The CLI now uses
 [`syncCollectionToObsidian`](src/application/sync-collection-to-obsidian.ts), which
-completes collection/item/membership persistence before the same snapshot/export
-sequence. Ordinary `youtube sync` uses
+completes collection/item/membership persistence and reconciliation before the shared collection-aware
+snapshot/export sequence described below. Ordinary `youtube sync` uses
 [`syncCollection`](src/application/sync-collection.ts) and performs no export.
+
+## Collection notes and full projection
+
+Both export commands share [readObsidianSnapshot](src/application/read-obsidian-snapshot.ts)
+and [exportObsidianProjection](src/outputs/obsidian/export-projection.ts). All three
+repository reads complete before any filesystem output. The pure projection builder
+rejects duplicate identities/edges and missing parents before writing. Joins use
+complete source plus ID identities; collection/member order uses ordinal source/ID
+comparison, independent of titles and input order. The sequential reads assume a
+single manual writer; they are not a transactionally isolated cross-process snapshot.
+
+Collection notes live at `<encoded-source>/collections/<encoded-collection-id>.md`.
+The existing byte encoder is reused, so renames retain paths and equal titles with
+different IDs remain separate. Existing item paths and Markdown bytes are unchanged.
+Collection front matter is ordered `source`, `sourceId`, `title`; it preserves an
+empty raw title while the heading falls back to the collection ID. Headings and
+link labels escape Markdown/HTML and normalize embedded line breaks. Member links
+use relative paths with a separate URL encoding pass: a literal `%58.md` file is
+linked as `../%2558.md`. Notes use LF and one final newline. Empty collections show
+`_No items._`.
+
+Item export runs first. Individual item failures do not suppress collection notes;
+links can therefore temporarily point to missing item notes. An unexpected item
+batch exception stops the collection phase. An unexpected collection batch exception
+retains completed item counts and the original error in a tagged failure outcome.
+The CLI prints safe diagnostics and exits nonzero for either batch's failures.
+Rerunning retries every persisted note and repairs partial output. There is no
+stale-file deletion, durable export tracking, or atomic
+multi-file write. Existing generated notes, including local edits, are overwritten.
+Reconciled memberships naturally disappear from collection links on the next export;
+orphan item notes remain because their items remain persisted. An export failure
+does not roll back reconciliation, and a later successful export repairs the projection.
 
 ## YouTube account setup
 
@@ -429,7 +487,7 @@ CollectionCollector → syncCollection() → SQLite source of truth → persiste
 - `src/application`: `sync()` collects, classifies, and persists through contracts;
   `syncToObsidian()` then reads the persisted snapshot and invokes batch export.
   The collection-aware variants reuse item classification, await membership
-  persistence, and provide the corresponding CLI operations.
+  persistence, and read all three repositories before the shared full projection.
   `syncAccount()` awaits discovery, sequential `syncCollection()` calls, and an
   optional final snapshot/export. Tagged results retain partial summaries and
   original fatal/export errors. Source-specific acquisition and fatal API
@@ -445,8 +503,9 @@ CollectionCollector → syncCollection() → SQLite source of truth → persiste
 - `src/outputs`: pure Markdown renderer and asynchronous output contract;
   `obsidian/note-path.ts` maps identity to a relative path, `write-note.ts` writes
   supplied text, and `export-note.ts` composes them for one item. `export-notes.ts`
-  delegates sequentially with per-entry failure collection. These operations add
-  no timestamps or import metadata.
+  delegates sequentially with per-entry failure collection. Collection projection,
+  path/render/link helpers, and collection exporters reuse these contracts and the
+  same writer. These operations add no timestamps or import metadata.
 - `src/cli`: Commander factory separated from the executable for testing;
   single-playlist composition owns authentication selection, database-path
   resolution, and storage cleanup. `sync-obsidian` also resolves the vault, invokes
@@ -511,9 +570,10 @@ persists many-to-many membership. The singular `collection` field retains its
 compatibility behavior described above. `sync-all` now persists every owned
 playlist sequentially and optionally exports once after the loop.
 
-Work stops at Task 016 account-wide synchronization. `youtube sync` collects,
-classifies, and persists items and relationships into SQLite;
+Work stops at Task 018 per-collection membership reconciliation. `youtube sync` collects,
+classifies, and persists items and relationships in SQLite, then removes stale
+memberships after a complete successful collection sync;
 `youtube sync-obsidian` additionally exports the persisted
 snapshot. `youtube sync-all` adds the OAuth account loop. None of these commands
-records import/export state or manages Git. Reconciliation, collection pages,
-and changes to legacy collection output remain deferred.
+records import/export state or manages Git. Collection/item deletion, filesystem
+cleanup, and changes to legacy item-note collection metadata remain deferred.

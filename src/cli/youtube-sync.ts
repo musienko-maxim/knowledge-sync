@@ -1,9 +1,7 @@
 import { realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import type { SyncResult } from '../application/sync.js';
-import type { SyncToObsidianResult } from '../application/sync-to-obsidian.js';
-import { syncCollection } from '../application/sync-collection.js';
-import { syncCollectionToObsidian } from '../application/sync-collection-to-obsidian.js';
+import { syncCollection, type CollectionSyncResult } from '../application/sync-collection.js';
+import { syncCollectionToObsidian, type SyncCollectionToObsidianResult } from '../application/sync-collection-to-obsidian.js';
 import { loadGoogleClientConfig } from '../auth/google-client-config.js';
 import { createAccessTokenProvider } from '../auth/google-oauth.js';
 import { FileTokenStore } from '../auth/token-store.js';
@@ -76,7 +74,7 @@ export function openDatabase(path: string): ReturnType<typeof openStorage> {
 }
 
 /** Concrete composition belongs here; sync remains independent of CLI/auth/SQLite. */
-export async function syncYouTubePlaylist(playlist: string, options: YouTubeSyncOptions): Promise<SyncResult> {
+export async function syncYouTubePlaylist(playlist: string, options: YouTubeSyncOptions): Promise<CollectionSyncResult> {
   const collector = await createCollector(playlist, options);
   const path = await databasePath(options.db);
   const storage = openDatabase(path);
@@ -91,7 +89,7 @@ export async function syncYouTubePlaylist(playlist: string, options: YouTubeSync
 export async function syncYouTubePlaylistToObsidian(
   playlist: string,
   options: YouTubeSyncObsidianOptions,
-): Promise<SyncToObsidianResult> {
+): Promise<SyncCollectionToObsidianResult> {
   const vault = options.vault ?? process.env.OBSIDIAN_VAULT_PATH;
   if (!vault?.trim()) {
     throw new SyncCommandError('Set --vault or OBSIDIAN_VAULT_PATH to a nonblank Obsidian vault path.');

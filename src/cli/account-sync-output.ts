@@ -3,6 +3,7 @@ import { GoogleAuthError } from '../auth/google-client-config.js';
 import { YouTubeError } from '../collectors/youtube/youtube-error.js';
 import { formatObsidianExportFailure, quoteDiagnosticValue } from './obsidian-export-failure.js';
 import { SyncCommandError } from './youtube-sync.js';
+import { formatCollectionExportOutcome } from './collection-export-output.js';
 
 function safeReason(error: unknown): string {
   return error instanceof GoogleAuthError || error instanceof YouTubeError || error instanceof SyncCommandError
@@ -15,6 +16,7 @@ export function formatAccountSyncResult(result: AccountSyncResult): { output: st
   const output = [
     `Playlists: discovered=${playlists.discovered} succeeded=${playlists.succeeded} failed=${playlists.failed} unattempted=${playlists.unattempted}`,
     `Items: processed=${items.processed} new=${items.new} changed=${items.changed} unchanged=${items.unchanged}`,
+    `Memberships: removed=${result.membershipsRemoved}`,
   ];
   const errors = result.failures.map((failure) => {
     const title = failure.playlistTitle === undefined ? '' : `, title=${quoteDiagnosticValue(failure.playlistTitle)}`;
@@ -22,9 +24,17 @@ export function formatAccountSyncResult(result: AccountSyncResult): { output: st
   });
   if (result.fatal) errors.push(`Account sync stopped during ${result.fatal.stage}: ${safeReason(result.fatal.error)}`);
   const exported = result.export;
-  if (exported.status === 'completed') {
+  let collectionFailed = false;
+  if (exported.status === 'completed' || (exported.status === 'failed' && exported.stage === 'collections')) {
     output.push(`Export: attempted=${exported.result.processed} succeeded=${exported.result.succeeded} failed=${exported.result.failed}`);
     errors.push(...exported.result.failures.map(formatObsidianExportFailure));
+    const collectionOutcome = exported.status === 'completed' ? exported.collections : { status: 'failed' as const, error: exported.error };
+    if (collectionOutcome) {
+      const formatted = formatCollectionExportOutcome(collectionOutcome);
+      if (formatted.output) output.push(formatted.output.trimEnd());
+      if (formatted.errors) errors.push(formatted.errors.trimEnd());
+      collectionFailed = formatted.failed;
+    }
   } else if (exported.status === 'failed') {
     errors.push(exported.stage === 'snapshot'
       ? 'Obsidian export failed while reading the persisted snapshot. Check the database.'
@@ -35,7 +45,7 @@ export function formatAccountSyncResult(result: AccountSyncResult): { output: st
   return {
     output: output.join('\n') + '\n',
     errors: errors.length ? errors.join('\n') + '\n' : '',
-    failed: result.fatal !== undefined || playlists.failed > 0 || exported.status === 'failed'
+    failed: result.fatal !== undefined || playlists.failed > 0 || exported.status === 'failed' || collectionFailed
       || (exported.status === 'completed' && exported.result.failed > 0),
   };
 }

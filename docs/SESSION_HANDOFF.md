@@ -1,8 +1,12 @@
 # Project Session Handoff
 
-Updated: 2026-10-05
+Updated: 2026-10-09
 
-Latest checkpoint: [Tasks 008–016 PR preparation](sessions/2026-10-05-tasks-008-016-pr.md).
+Latest work: Task 018 membership reconciliation is implemented and verified,
+alongside uncommitted Task 017 changes. The resumed implementation authorization
+and decisions are recorded in [the Task 018 review](task-018-review.md), which
+supersedes the supplied brief's review-only stopping point. Previous checkpoint:
+[Tasks 008–016 PR preparation](sessions/2026-10-05-tasks-008-016-pr.md).
 The [Tasks 008–012 checkpoint](sessions/2026-10-02-tasks-008-012-checkpoint.md) is historical.
 The [Tasks 005–007 checkpoint](sessions/2026-09-28-tasks-005-007-checkpoint.md)
 is historical; PR #3 has since been merged.
@@ -11,7 +15,7 @@ is a historical record; PR #2 has since been merged.
 
 ## Current state
 
-`knowledge-sync` has implementations for Tasks 001–016:
+`knowledge-sync` has implementations for Tasks 001–018:
 
 - Task 001: project foundation, domain model, SQLite synchronization state, output boundary, and CLI bootstrap.
 - Task 002: public YouTube playlist collector with URL/ID parsing, pagination, normalized `KnowledgeItem` output, and API-key access.
@@ -47,6 +51,12 @@ is a historical record; PR #2 has since been merged.
 - Task 016: OAuth-only `youtube sync-all`, sequential owned-playlist sync,
   retained playlist/fatal/export outcomes, successful-playlist item counters,
   and one optional final full-snapshot export after recoverable failures.
+- Task 017: shared collection-aware Obsidian projection for both export commands,
+  with strict snapshot joins, stable collection pages, relative item links, separate
+  collection results, and preserved existing item paths, Markdown, and counters.
+- Task 018: authoritative per-collection membership reconciliation after complete
+  successful persistence, atomic stale-edge removal, separate removal counts,
+  and retention of items, collections, and files.
 
 The working tree also contains the Task 003 refresh-error follow-up: invalid
 authorization, network failures, transient server failures, and unknown errors
@@ -98,6 +108,47 @@ No commits or pushes were made during Task 009.
 
 ## Important architecture
 
+- Task 018 extends the shared `syncCollection()` path used by both single-playlist
+  commands and account sync. Only after full collection and all additive writes
+  succeed does it call `removeStaleForCollection()` with deduplicated composite
+  item identities. Successful empty/all-filtered normalized snapshots remove all
+  memberships in that collection; failures before removal skip the destructive phase.
+- The existing SQLite connection runs the scoped read/deletes in one short
+  synchronous transaction. Any deletion failure rolls back that entire removal
+  phase; earlier additive writes remain committed. No schema changes, item or
+  collection deletion, discovery-based removal, or filesystem cleanup are added.
+- `CollectionSyncResult.membershipsRemoved` and the separate account aggregate
+  preserve existing item counters. Only successful playlists contribute to totals;
+  recoverable/fatal failures retain existing account semantics. Each CLI adds
+  `Memberships: removed=N`. Projection reads the reconciled database; export
+  failures leave it committed, and orphan items and their notes remain retained.
+
+- Task 017 adds `readObsidianSnapshot()` and `exportObsidianProjection()` shared by
+  `syncCollectionToObsidian()` and `syncAccount()`. All three repository reads and
+  strict pure projection validation precede output. Composite source/ID identities
+  govern both sides of each membership; duplicate identities/edges and missing
+  parents fail before writes. Legacy collection-title text never defines membership.
+- Collection paths reuse the existing persistent encoder at
+  `<encoded-source>/collections/<encoded-collection-id>.md`. A separate Markdown
+  destination encoder handles literal percent signs and other URL-sensitive text.
+  Collection YAML preserves raw source/sourceId/title in that order; inline text
+  escapes Markdown/HTML and normalizes line breaks. Empty titles display sourceId,
+  empty collections display `_No items._`, and output ends with exactly one LF.
+- Item export results keep their existing locations and meaning. Collection results
+  are additive. Individual item failures allow collection export; unexpected item
+  batch exceptions stop later output. Unexpected collection exceptions preserve
+  completed item results and original errors through tagged outcomes, including
+  thrown `undefined`; account outcomes also retain prior playlist results. CLI
+  summaries are separate and either phase's failure causes nonzero status.
+- Empty persisted collections now write notes: an empty playlist with a nonexistent
+  vault intentionally fails export. A projection with no items or collections
+  remains a filesystem-free no-op. Generic `syncToObsidian()` stays item-only.
+  Sequential snapshot reads assume local/manual use, not cross-process isolation.
+  Writes still overwrite local edits, remain non-atomic, and do not delete stale
+  notes. Task 018 reconciles database memberships before output. Failed item writes
+  may leave collection links
+  unresolved until a later successful run.
+
 - Task 016's `syncAccount(source, repositories, vaultPath?)` completes discovery
   before invoking `syncCollection()` sequentially in discovery order. The small
   `AccountSyncSource` boundary supplies discovery, collector creation, and fatal
@@ -148,21 +199,25 @@ No commits or pushes were made during Task 009.
   writes, upserts the collection, and reuses generic `sync()` with an adapter that
   awaits each item upsert then membership add. Unchanged items still acquire
   missing memberships. Failure stops later entries and retains earlier writes,
-  with no rollback, retries, reconciliation, or import recording.
+  with no rollback of additive writes, retries, or import recording. Task 018 then
+  removes stale memberships atomically after all these writes succeed.
 - `syncCollectionToObsidian()` waits for all persistence before the full ordered
-  item snapshot and unchanged exporter. Errors skip later phases and propagate
-  unchanged. Both CLI commands retain public results, auth, configuration, safe
+  item/collection/membership snapshot and shared projection exporter. Read failures
+  skip output; export phases use the Task 017 outcomes described above. Both CLI
+  commands retain existing item results, auth, configuration, safe
   diagnostics, and finally-based cleanup. Generic `sync()` and `syncToObsidian()`
   remain available unchanged; the earlier Task 014 delegation below is historical.
 - `KnowledgeItem.collection` remains last-synchronized-playlist title metadata for
   compatibility. It still affects item classification and Markdown; alternating
   playlists can change both without modifying other memberships. The relationship
-  tables are authoritative for observed membership, not a reconciled live mirror.
+  tables reflect each collection's last successful normalized snapshot after
+  Task 018 reconciliation; failed and unattempted collections retain prior edges.
   Playlist position and repeated occurrences within a playlist are omitted.
 
 - `youtube sync-obsidian <playlist>` accepts `--auth <api-key|oauth>` (default
   `api-key`), `--db <path>`, and `--vault <path>`. The existing `youtube sync`
-  command retains its options, SQLite-only behavior, messages, and auth semantics.
+  command retains its options, SQLite-only behavior, and auth semantics. Task 018
+  adds a separate membership-removal summary to its existing processed count.
 - `src/cli/youtube-sync.ts` exports `YouTubeSyncObsidianOptions` and
   `syncYouTubePlaylistToObsidian()`. Small shared collector/open helpers reuse
   authentication and storage setup. The new composition validates vault presence
@@ -205,8 +260,8 @@ No commits or pushes were made during Task 009.
   after successful sync, including unchanged items and items missing from current
   collection. Duplicate collection entries collapse through existing upserts;
   sync and export counts can differ. “Full projection” describes attempted export,
-  not a guaranteed vault mirror: writes can fail and deletion/reconciliation is
-  absent. Existing overwrite and non-atomic output behavior remain in effect.
+  not a guaranteed vault mirror: writes can fail and filesystem cleanup is absent.
+  Existing overwrite and non-atomic output behavior remain in effect.
 - Sync failure skips read/export; read failure skips export. Both and unexpected
   batch-level failures propagate the original thrown value. Ordinary per-item
   failures resolve in the nested export result. No output failure rolls back
@@ -344,6 +399,112 @@ No commits or pushes were made during Task 009.
 
 ## Verification last completed
 
+### Task 018 verification
+
+Task 018 follows [prompts/task-018.md](../prompts/task-018.md) with the implementation
+authorization and clarifications recorded in [its review](task-018-review.md).
+On 2026-10-09, resumed the existing implementation, completed independent read-only
+review and fresh `ks-persistence`/`ks-verify` checks, and corrected the remaining
+README/handoff status. No source fixes were needed during this continuation.
+The Task 017 specification referenced by the brief is absent; its accepted behavior
+remains documented in the historical section below and covered by current tests.
+
+- `npm.cmd install`: passed, dependencies up to date; none added. npm still reports
+  one high-severity audit finding in the existing dependency tree; no audit fix applied.
+- Focused `npm.cmd test -- tests/collection-repositories.test.ts tests/sync-collection.test.ts tests/sync-account.test.ts tests/youtube-collections.integration.test.ts tests/youtube-sync-all.integration.test.ts tests/cli.test.ts`:
+  **195 passed in six files**.
+- `npm.cmd test`: **951 passed, one expected Windows POSIX-permissions skip,
+  40 files** (19 more passing cases than the Task 017 checkpoint).
+- `npm.cmd run typecheck` and `npm.cmd run build`: passed.
+- `node dist/cli/index.js`, `node dist/cli/index.js --help`, and built
+  `youtube sync --help`, `youtube sync-obsidian --help`, `youtube sync-all --help`: passed.
+- `npm.cmd exec --offline --package=. -- knowledge-sync --help`: passed.
+- `git diff --check`, new-file whitespace, current documentation references, and
+  the reported directory layout: passed. Historical links to removed task briefs
+  remain historical; no missing specifications were recreated.
+- Independent `ks_reviewer` review found no actionable correctness issues or
+  missing required regression cases. Tests cover actual SQLite rollback after an
+  earlier deletion, scoped identities/shared items, duplicate/empty snapshots,
+  large desired sets, pre-removal failures, both auth modes and all sync commands,
+  account recoverable/fatal outcomes, idempotency, and export-failure recovery.
+
+Checks used mocked transport and temporary databases/vaults; no live user account,
+database, or vault was used. No new runtime dependencies, schema changes, or new
+directories. The layout remains `src/{application,auth,cli,collectors,core/models,
+outputs/obsidian,storage/sqlite}`, `tests`, `data`, `docs`, and `prompts`.
+
+Task 018 changes extend `src/storage/{collection-membership-repository,
+sqlite/collection-membership-repository}.ts`, `src/application/{sync-collection,
+sync-collection-to-obsidian,sync-account}.ts`, `src/cli/{youtube-sync,program,
+account-sync-output}.ts`, their existing storage/application/CLI/integration tests,
+README, output README, this handoff, and the new supplied brief/review documents.
+Existing Task 017 work and unrelated local deletions were preserved. No commits
+or pushes were made. No implementation-scope deviations; the earlier explicit
+implementation approval supersedes the brief's review-only instructions.
+
+### Historical Task 017 verification
+
+Task 017 follows [prompts/task-017.md](../prompts/task-017.md), which already contains
+the accepted architecture clarifications. On 2026-10-06, resumed the existing
+implementation, completed two independent read-only reviews and fresh `ks-verify`
+checks, and updated the remaining output documentation and handoff. No source fixes
+were required during this continuation. No commits or pushes were made.
+
+- `npm.cmd install`: passed; no dependencies added. npm reported one high-severity
+  audit finding in the existing dependency tree; dependency remediation was outside
+  this task and no audit fix was applied.
+- Focused `npm.cmd test --` run: **446 passed in 15 files**: `collection-markdown`,
+  `collection-projection`, `obsidian-export-collections`, `obsidian-export-projection`,
+  `obsidian-projection.integration`, `read-obsidian-snapshot`,
+  `sync-collection-to-obsidian`, `sync-account`, `youtube-sync-obsidian`,
+  `youtube-sync-obsidian.integration`, `youtube-collections.integration`,
+  `youtube-sync-all.integration`, `cli`, `markdown`, and `obsidian-note-path`
+  (each under `tests/` with `.test.ts` suffix).
+- `npm.cmd test`: **932 passed, one expected Windows POSIX-permissions skip,
+  40 files**. This is 91 more passing cases than the Task 016 checkpoint.
+- `npm.cmd run typecheck` and `npm.cmd run build`: passed.
+- `node dist/cli/index.js`, `node dist/cli/index.js --help`, and built
+  `youtube sync-obsidian --help` / `youtube sync-all --help`: passed.
+- `npm.cmd exec --offline --package=. -- knowledge-sync` and its `--help`: passed.
+- Independent `ks_reviewer` reviews of the output implementation/tests and the
+  application/CLI integration/tests found no actionable correctness issues.
+  Final documentation review identified one sorting-attribution wording issue;
+  it was corrected to attribute member ordering to the projection builder.
+- `git diff --check`, new-file whitespace, current documentation references,
+  and the reported directory layout: passed.
+
+The first focused run had 444 passes and two CLI subprocess failures caused by
+the known sandbox `uv_os_get_passwd` restriction in `tsx`. The approved outside-
+sandbox rerun passed all 446; the full suite then passed outside the sandbox as
+well. Tests used mocked API/OAuth and temporary databases/vaults; no live user
+account, database, or vault was used. No test/security settings were weakened.
+
+Files added:
+
+- `src/application/read-obsidian-snapshot.ts`
+- `src/cli/collection-export-output.ts`
+- `src/outputs/yaml-string.ts`
+- `src/outputs/obsidian/{collection-markdown,collection-path,collection-projection,
+  export-collection,export-collections,export-projection,markdown-link}.ts`
+- `tests/{collection-markdown,collection-projection,obsidian-export-collections,
+  obsidian-export-projection,obsidian-projection.integration,read-obsidian-snapshot}.test.ts`
+- The supplied `prompts/task-017.md` accepted specification.
+
+Files changed:
+
+- `src/application/{sync-account,sync-collection-to-obsidian}.ts`
+- `src/cli/{account-sync-output,obsidian-export-failure,program,youtube-sync}.ts`
+- `src/outputs/markdown.ts`, `src/outputs/obsidian/note-path.ts`
+- `tests/{cli,sync-account,sync-collection-to-obsidian,youtube-collections.integration,
+  youtube-sync-all.integration,youtube-sync-obsidian.integration,youtube-sync-obsidian}.test.ts`
+- `README.md`, `src/outputs/obsidian/README.md`, this handoff.
+
+No schema/dependency changes, new directories, or specification deviations.
+The layout remains `src/{application,auth,cli,collectors,core/models,outputs/obsidian,
+storage/sqlite}`, `tests`, `data`, `docs`, and `prompts`. Existing unrelated deletions
+of `instructions.txt`, `prompts/task-007.md`, `prompts/task-012.md`,
+`prompts/task-016.md`, and `task-004.md` were preserved. Task 018 was not started.
+
 ### Task 016 verification
 
 Task 016 is implemented according to [prompts/task-016.md](../prompts/task-016.md),
@@ -406,7 +567,7 @@ Legacy collection title, observed-not-reconciled memberships, owned-only discove
 and failed-playlist counter limitations remain documented. Existing Task 013–015
 work and unrelated deletions were preserved; the now-absent Task 015 specification
 is a historical reference below, not reconstructed. No commits or pushes were made.
-Task 017 has not started.
+Task 017 had not started at that historical checkpoint; see its verification above.
 
 ### Task 015 verification
 
@@ -905,6 +1066,10 @@ were changed. Unrelated pre-existing changes were checked against task-entry cop
 
 ## Current checkpoint and repository state
 
+Tasks 017 and 018 are complete and uncommitted on top of local HEAD `392fb44`. The earlier
+PR-preparation record below is historical; this continuation did not fetch or
+verify current remote PR state and did not stage, commit, or push.
+
 The user authorized preparing a PR after Task 016 completion. A fresh fetch
 confirmed `origin/main` is still `193e837` (Tasks 001–007), and the remote exposes
 only PR refs 1–3. New branch `iteration/task-016-account-sync` starts at the
@@ -972,14 +1137,15 @@ helpers, not application agents or automatic task execution.
 ## Next-session guidance
 
 Read this handoff and the explicitly assigned task specification before changing
-code. Task 016 implementation, validation, documentation, and independent review
-are complete against
-[prompts/task-016.md](../prompts/task-016.md), including accepted review clarifications.
-Tasks 008–016 are packaged for PR on `iteration/task-016-account-sync`;
-check actual Git/upstream/PR state before further work. The latest checkpoint
-contains the prepared PR description and validation evidence.
+code. Tasks 017 and 018 implementation, validation, documentation, and independent
+review are complete. The current specification is [prompts/task-018.md](../prompts/task-018.md),
+with accepted implementation decisions in [its review](task-018-review.md).
+Their changes remain uncommitted; preserve unrelated local deletions.
+The previous checkpoint contains the prepared Tasks 008–016 PR description and
+historical validation evidence; check actual Git/upstream/PR state if assigned
+publication work.
 Task 010 code and tests were already present at Task 011
 entry; do not infer historical acceptance from their presence. Work only on an
 explicitly assigned task. Import-state orchestration remains unimplemented.
-A possible next product step is collection-aware Obsidian projection, requiring
-its own specification and assignment. Task 017 is not started or authorized here.
+Do not begin the next task without a separate explicit assignment. Current Task 018
+authorization excludes commits and pushes.

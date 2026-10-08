@@ -36,10 +36,11 @@ function setup() {
   const storage: Storage = {
     knowledgeItems: { findByIdentity: vi.fn(), upsert: vi.fn(), listAll: vi.fn() },
     collections: { upsert: vi.fn(), listAll: vi.fn() },
-    collectionMemberships: { add: vi.fn(), listAll: vi.fn() },
+    collectionMemberships: { removeStaleForCollection: vi.fn(), add: vi.fn(), listAll: vi.fn() },
     getImported: vi.fn(), recordImport: vi.fn(), close: vi.fn(),
   };
   const result: application.AccountSyncResult = {
+    membershipsRemoved: 2,
     playlists: { discovered: 2, succeeded: 2, failed: 0, unattempted: 0 },
     items: { processed: 3, new: 2, changed: 0, unchanged: 1 },
     failures: [], export: { status: 'not-requested' },

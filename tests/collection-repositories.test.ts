@@ -222,7 +222,105 @@ it('rejects operations after the shared connection closes and preserves database
   const store = open();
   close(store);
   for (const operation of [() => store.collections.upsert(collection), () => store.collections.listAll(),
-    () => store.collectionMemberships.add(membership), () => store.collectionMemberships.listAll()]) {
+    () => store.collectionMemberships.add(membership), () => store.collectionMemberships.listAll(),
+    () => store.collectionMemberships.removeStaleForCollection(collection, [])]) {
     await expectDatabaseError(operation(), /not open|closed/i);
   }
+});
+
+async function seedMemberships(store: Storage, itemIds: readonly string[],
+  target: KnowledgeCollection = collection) {
+  await store.collections.upsert(target);
+  for (const sourceId of itemIds) {
+    await store.knowledgeItems.upsert({ ...item, source: target.source, sourceId });
+    await store.collectionMemberships.add({ source: target.source,
+      collectionSourceId: target.sourceId, itemSourceId: sourceId });
+  }
+}
+
+it('removes stale edges while retaining desired edges and tolerating new and duplicate desired identities', async () => {
+  const store = open();
+  await seedMemberships(store, ['X', 'Y', 'Z']);
+  const desired = [{ source: 'youtube', sourceId: 'Y' },
+    { source: 'youtube', sourceId: 'W' }, { source: 'youtube', sourceId: 'Y' }];
+  expect(await store.collectionMemberships.removeStaleForCollection(collection, desired)).toBe(2);
+  const retained = [{ ...membership, itemSourceId: 'Y' }];
+  expect(await store.collectionMemberships.listAll()).toStrictEqual(retained);
+  expect(await store.collectionMemberships.removeStaleForCollection(collection, desired)).toBe(0);
+  expect(await store.collectionMemberships.listAll()).toStrictEqual(retained);
+});
+
+it('removes an empty snapshot membership set without changing items, collections, legacy metadata, or imports', async () => {
+  const store = open();
+  await seedMemberships(store, ['X', 'Y']);
+  await store.knowledgeItems.upsert({ ...item, collection: 'Legacy text is retained' });
+  const importedAt = new Date('2026-01-02T03:04:05.006Z');
+  store.recordImport({ ...item, importedAt });
+  const originalItems = await store.knowledgeItems.listAll();
+  const originalCollections = await store.collections.listAll();
+  const originalImport = store.getImported(item);
+
+  expect(await store.collectionMemberships.removeStaleForCollection(collection, [])).toBe(2);
+  expect(await store.collectionMemberships.listAll()).toStrictEqual([]);
+  expect(await store.knowledgeItems.listAll()).toStrictEqual(originalItems);
+  expect(await store.collections.listAll()).toStrictEqual(originalCollections);
+  expect(store.getImported(item)).toStrictEqual(originalImport);
+  expect(await store.collectionMemberships.removeStaleForCollection(collection, [])).toBe(0);
+});
+
+it('scopes stale deletion by both source and collection ID and retains shared item membership elsewhere', async () => {
+  const store = open();
+  await seedMemberships(store, ['X']);
+  await seedMemberships(store, ['X'], { ...collection, sourceId: 'B' });
+  await seedMemberships(store, ['X'], { ...collection, source: 'example' });
+
+  expect(await store.collectionMemberships.removeStaleForCollection(collection, [])).toBe(1);
+  expect(await store.collectionMemberships.listAll()).toStrictEqual([
+    { ...membership, source: 'example' }, { ...membership, collectionSourceId: 'B' },
+  ]);
+  expect(await store.knowledgeItems.findByIdentity(item.source, item.sourceId)).toStrictEqual(item);
+});
+
+it('validates every desired item source before any destructive change', async () => {
+  const store = open();
+  await seedMemberships(store, ['X', 'Y']);
+  const original = await store.collectionMemberships.listAll();
+  await expect(store.collectionMemberships.removeStaleForCollection(collection, [
+    { source: 'youtube', sourceId: 'Y' }, { source: 'example', sourceId: 'X' },
+  ])).rejects.toThrow(/share the collection source/);
+  expect(await store.collectionMemberships.listAll()).toStrictEqual(original);
+});
+
+it('handles desired snapshots larger than the SQLite variable limit without expanding SQL parameters', async () => {
+  const store = open();
+  await seedMemberships(store, ['X', 'Y']);
+  const desired = Array.from({ length: 40_000 }, (_, index) => ({
+    source: 'youtube', sourceId: `desired-${index}`,
+  }));
+  desired.push({ source: 'youtube', sourceId: 'Y' });
+  expect(await store.collectionMemberships.removeStaleForCollection(collection, desired)).toBe(1);
+  expect(await store.collectionMemberships.listAll()).toStrictEqual([{ ...membership, itemSourceId: 'Y' }]);
+});
+
+it('rolls back earlier stale-edge deletions when a later SQLite trigger fails', async () => {
+  const path = databasePath();
+  const store = open(path);
+  await seedMemberships(store, ['X', 'Y', 'Z']);
+  const original = await store.collectionMemberships.listAll();
+  const raw = new Database(path);
+  try {
+    // The trigger fails only after X has already been removed within this transaction.
+    // SQLite RAISE(FAIL) alone does not undo earlier changes; repository rollback must.
+    raw.exec(`CREATE TRIGGER fail_later_stale_delete BEFORE DELETE ON collection_memberships
+      WHEN OLD.source = 'youtube' AND OLD.collection_source_id = 'A' AND OLD.item_source_id = 'Y'
+        AND NOT EXISTS (SELECT 1 FROM collection_memberships
+          WHERE source = 'youtube' AND collection_source_id = 'A' AND item_source_id = 'X')
+      BEGIN SELECT RAISE(FAIL, 'later stale deletion failed'); END`);
+    await expectDatabaseError(store.collectionMemberships.removeStaleForCollection(collection, []),
+      /later stale deletion failed/);
+    expect(await store.collectionMemberships.listAll()).toStrictEqual(original);
+    raw.exec('DROP TRIGGER fail_later_stale_delete');
+    expect(await store.collectionMemberships.removeStaleForCollection(collection, [])).toBe(3);
+    expect(await store.collectionMemberships.listAll()).toStrictEqual([]);
+  } finally { raw.close(); }
 });

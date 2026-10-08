@@ -1,5 +1,5 @@
 import type { Command } from 'commander';
-import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, rmdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -11,7 +11,9 @@ import { syncAllYouTubePlaylists } from '../src/cli/youtube-sync-all.js';
 import * as sqlite from '../src/storage/sqlite/storage.js';
 import type { Storage } from '../src/storage/storage.js';
 import * as output from '../src/outputs/obsidian/export-notes.js';
+import * as collectionOutput from '../src/outputs/obsidian/export-collections.js';
 import { buildObsidianRelativePath } from '../src/outputs/obsidian/note-path.js';
+import { buildObsidianCollectionRelativePath } from '../src/outputs/obsidian/collection-path.js';
 
 const realOpen = sqlite.openStorage;
 const realExport = output.exportObsidianNotes;
@@ -54,6 +56,8 @@ function track(store: Storage) {
   stores.push(store);
   vi.spyOn(store, 'close');
   vi.spyOn(store.knowledgeItems, 'listAll');
+  vi.spyOn(store.collections, 'listAll');
+  vi.spyOn(store.collectionMemberships, 'listAll');
   return store;
 }
 
@@ -109,6 +113,158 @@ const playlists: Playlist[] = [
   { id: 'PLC', title: 'Empty', videos: [] },
 ];
 
+const reconciliationPlaylists: Playlist[] = [
+  { id: 'PLA', title: 'A', videos: ['X', 'Y'] },
+  { id: 'PLB', title: 'B', videos: ['X', 'Z'] },
+  { id: 'PLC', title: 'C', videos: ['Q'] },
+];
+
+async function seedReconciliation(exportToVault: boolean) {
+  // This retained playlist was added outside owned-playlist discovery.
+  const store = realOpen(database);
+  try {
+    await store.collections.upsert({ source: 'youtube', sourceId: 'PLD', title: 'External D' });
+    await store.knowledgeItems.upsert({ source: 'youtube', sourceId: 'R', title: 'Video R', url: 'https://www.youtube.com/watch?v=R' });
+    await store.collectionMemberships.add({ source: 'youtube', collectionSourceId: 'PLD', itemSourceId: 'R' });
+  } finally { store.close(); }
+  transport(reconciliationPlaylists);
+  await cli().run(exportToVault ? ['--vault', vault] : []);
+  return snapshot();
+}
+
+it.each([false, true])('reconciles only successful discovered playlists and retains orphan items (vault=%s)', async (exportToVault) => {
+  const before = await seedReconciliation(exportToVault);
+  const collectionPaths = before.collections.map((collection) => join(vault, buildObsidianCollectionRelativePath(collection)));
+  const beforeNotes = exportToVault ? await Promise.all(collectionPaths.map((path) => readFile(path, 'utf8'))) : [];
+  const orphanPaths = before.items.filter((item) => ['Q', 'Y'].includes(item.sourceId))
+    .map((item) => join(vault, buildObsidianRelativePath(item)));
+  const orphanNotes = exportToVault ? await Promise.all(orphanPaths.map((path) => readFile(path, 'utf8'))) : [];
+  transport([
+    { ...reconciliationPlaylists[0]!, videos: ['X', 'W'] },
+    { ...reconciliationPlaylists[1]!, failure: 404 },
+    { ...reconciliationPlaylists[2]!, videos: [] },
+  ]);
+  const exportNotes = vi.spyOn(output, 'exportObsidianNotes');
+  const command = cli();
+  await expect(command.run(exportToVault ? ['--vault', vault] : [])).rejects.toMatchObject({ exitCode: 1 });
+  expect(command.stdout()).toContain('Playlists: discovered=3 succeeded=2 failed=1 unattempted=0');
+  expect(command.stdout()).toContain('Items: processed=2 new=1 changed=1 unchanged=0');
+  expect(command.stdout()).toContain('Memberships: removed=2');
+  expect(command.stderr()).not.toContain('fake-secret');
+  const after = await snapshot();
+  expect(after.collections).toEqual(before.collections);
+  expect(after.items.map(({ sourceId }) => sourceId)).toEqual(['Q', 'R', 'W', 'X', 'Y', 'Z']);
+  expect(after.memberships).toEqual([
+    { source: 'youtube', collectionSourceId: 'PLA', itemSourceId: 'W' },
+    { source: 'youtube', collectionSourceId: 'PLA', itemSourceId: 'X' },
+    { source: 'youtube', collectionSourceId: 'PLB', itemSourceId: 'X' },
+    { source: 'youtube', collectionSourceId: 'PLB', itemSourceId: 'Z' },
+    { source: 'youtube', collectionSourceId: 'PLD', itemSourceId: 'R' },
+  ]);
+  if (exportToVault) {
+    expect(exportNotes).toHaveBeenCalledTimes(1);
+    expect(command.stdout()).toContain('Export: attempted=6 succeeded=6 failed=0');
+    const notes = await Promise.all(collectionPaths.map((path) => readFile(path, 'utf8')));
+    expect(notes[0]).toContain('[Video X]');
+    expect(notes[0]).toContain('[Video W]');
+    expect(notes[0]).not.toContain('[Video Y]');
+    expect(notes[1]).toBe(beforeNotes[1]);
+    expect(notes[2]).toContain('_No items._');
+    expect(notes[2]).not.toContain('[Video Q]');
+    expect(notes[3]).toBe(beforeNotes[3]);
+    expect(await Promise.all(orphanPaths.map((path) => readFile(path, 'utf8')))).toEqual(orphanNotes);
+  } else {
+    expect(exportNotes).not.toHaveBeenCalled();
+    expect(await readdir(vault)).toEqual([]);
+  }
+  const repeated = cli();
+  await expect(repeated.run(exportToVault ? ['--vault', vault] : [])).rejects.toMatchObject({ exitCode: 1 });
+  expect(repeated.stdout()).toContain('Items: processed=2 new=0 changed=0 unchanged=2');
+  expect(repeated.stdout()).toContain('Memberships: removed=0');
+  expect(await snapshot()).toEqual(after);
+});
+
+it('preserves two completed reconciliations after a late fatal source error and skips remaining work and export', async () => {
+  const before = await seedReconciliation(true);
+  const collectionPaths = before.collections.map((collection) => join(vault, buildObsidianCollectionRelativePath(collection)));
+  const notes = await Promise.all(collectionPaths.map((path) => readFile(path, 'utf8')));
+  const request = transport([
+    { ...reconciliationPlaylists[0]!, videos: ['X'] },
+    { ...reconciliationPlaylists[1]!, videos: ['X'] },
+    { ...reconciliationPlaylists[2]!, failure: 403, reason: 'quotaExceeded' },
+    { id: 'PLD', title: 'External D', videos: [] },
+  ]);
+  request.mockClear();
+  const exportNotes = vi.spyOn(output, 'exportObsidianNotes');
+  const exportCollections = vi.spyOn(collectionOutput, 'exportObsidianCollections');
+  const result = await syncAllYouTubePlaylists({ vault });
+  expect(result.playlists).toEqual({ discovered: 4, succeeded: 2, failed: 1, unattempted: 1 });
+  expect(result.membershipsRemoved).toBe(2);
+  expect(result.items).toEqual({ processed: 2, new: 0, changed: 2, unchanged: 0 });
+  expect(result.fatal?.stage).toBe('playlist');
+  expect(result.export.status).toBe('skipped');
+  expect(exportNotes).not.toHaveBeenCalled();
+  expect(exportCollections).not.toHaveBeenCalled();
+  expect(request.mock.calls.some(([input]) => {
+    const url = new URL(String(input));
+    return (url.searchParams.get('id') ?? url.searchParams.get('playlistId')) === 'PLD';
+  })).toBe(false);
+  const after = await snapshot();
+  expect(after.collections).toEqual(before.collections);
+  expect(after.items.map(({ sourceId }) => sourceId)).toEqual(before.items.map(({ sourceId }) => sourceId));
+  expect(after.memberships).toEqual(before.memberships.filter((edge) => !['Y', 'Z'].includes(edge.itemSourceId)));
+  expect(await Promise.all(collectionPaths.map((path) => readFile(path, 'utf8')))).toEqual(notes);
+});
+
+it.each([false, true])('uses existing failure classification when reconciliation storage fails (fatal=%s)', async (fatal) => {
+  const before = await seedReconciliation(false);
+  const failure = new Error('fake-secret removal failed', fatal
+    ? { cause: Object.assign(new Error('disk full'), { code: 'SQLITE_FULL' }) }
+    : undefined);
+  vi.mocked(sqlite.openStorage).mockImplementationOnce((path) => {
+    const store = track(realOpen(path));
+    const remove = store.collectionMemberships.removeStaleForCollection.bind(store.collectionMemberships);
+    vi.spyOn(store.collectionMemberships, 'removeStaleForCollection').mockImplementation(async (collection, desired) => {
+      if (collection.sourceId === 'PLB') throw failure;
+      return remove(collection, desired);
+    });
+    return store;
+  });
+  const request = transport([
+    { ...reconciliationPlaylists[0]!, videos: ['X'] },
+    { ...reconciliationPlaylists[1]!, videos: ['X'] },
+    { ...reconciliationPlaylists[2]!, videos: [] },
+  ]);
+  request.mockClear();
+  const exportNotes = vi.spyOn(output, 'exportObsidianNotes');
+  const result = await syncAllYouTubePlaylists({ vault });
+  expect(result.playlists).toEqual({ discovered: 3, succeeded: fatal ? 1 : 2, failed: 1, unattempted: fatal ? 1 : 0 });
+  expect(result.membershipsRemoved).toBe(fatal ? 1 : 2);
+  // The failed B sync wrote X but contributes neither item nor removal counts.
+  expect(result.items).toEqual({ processed: 1, new: 0, changed: 1, unchanged: 0 });
+  expect(result.failures[0]?.error).toBe(failure);
+  const after = await snapshot();
+  expect(after.collections).toEqual(before.collections);
+  expect(after.items.map(({ sourceId }) => sourceId)).toEqual(before.items.map(({ sourceId }) => sourceId));
+  expect(after.memberships).toEqual(before.memberships.filter((edge) => edge.itemSourceId !== 'Y' && (fatal || edge.itemSourceId !== 'Q')));
+  if (fatal) {
+    expect(result.fatal).toEqual({ stage: 'playlist', error: failure });
+    expect(result.export.status).toBe('skipped');
+    expect(exportNotes).not.toHaveBeenCalled();
+    expect(request.mock.calls.some(([input]) => {
+      const url = new URL(String(input));
+      return (url.searchParams.get('id') ?? url.searchParams.get('playlistId')) === 'PLC';
+    })).toBe(false);
+    expect(await readdir(vault)).toEqual([]);
+  } else {
+    expect(result.fatal).toBeUndefined();
+    expect(result.export.status).toBe('completed');
+    expect(exportNotes).toHaveBeenCalledTimes(1);
+    const b = after.collections.find((collection) => collection.sourceId === 'PLB')!;
+    expect(await readFile(join(vault, buildObsidianCollectionRelativePath(b)), 'utf8')).toContain('[Video Z]');
+  }
+});
+
 it('syncs owned playlists including empty ones, without exporting merely because the environment names a vault', async () => {
   const request = transport(playlists);
   const exportNotes = vi.spyOn(output, 'exportObsidianNotes');
@@ -137,15 +293,31 @@ it('reads and exports the full persisted snapshot exactly once after all playlis
   const request = transport(playlists);
   const exportNotes = vi.spyOn(output, 'exportObsidianNotes').mockImplementation(async (path, items) => {
     expect(request).toHaveBeenCalledTimes(7);
+    expect(stores[0]!.collections.listAll).toHaveBeenCalledTimes(1);
+    expect(stores[0]!.collectionMemberships.listAll).toHaveBeenCalledTimes(1);
     return realExport(path, items);
   });
+  const exportCollections = vi.spyOn(collectionOutput, 'exportObsidianCollections');
   const command = cli();
   await command.run(['--vault', vault]);
   expect(command.stdout()).toContain('Export: attempted=4 succeeded=4 failed=0');
   expect(exportNotes).toHaveBeenCalledTimes(1);
+  expect(exportCollections).toHaveBeenCalledTimes(1);
   expect(stores[0]!.knowledgeItems.listAll).toHaveBeenCalledTimes(1);
   expect(await readFile(join(vault, buildObsidianRelativePath(prior)), 'utf8')).toContain('Retained item');
+  const persisted = await snapshot();
+  const paths = persisted.collections.map((collection) => join(vault, buildObsidianCollectionRelativePath(collection)));
+  const notes = await Promise.all(paths.map((path) => readFile(path, 'utf8')));
+  expect(notes[0]).toContain('[Video X]');
+  expect(notes[1]).toContain('[Video X]');
+  expect(notes[2]).toContain('_No items._');
+  const sharedItem = persisted.items.find((item) => item.sourceId === 'X')!;
+  expect((await readdir(dirname(join(vault, buildObsidianRelativePath(sharedItem))))).filter((name) => name.endsWith('.md'))).toHaveLength(3);
   expect(stores[0]!.close).toHaveBeenCalledTimes(1);
+  // A repeat rebuilds identical collection pages even though legacy item collection text changes during sync.
+  exportNotes.mockRestore();
+  await cli().run(['--vault', vault]);
+  expect(await Promise.all(paths.map((path) => readFile(path, 'utf8')))).toEqual(notes);
 });
 
 it('exports retained data after discovering zero playlists', async () => {
@@ -238,23 +410,70 @@ it('does no playlist writes when discovery fails on a later page', async () => {
   expect(await snapshot()).toEqual({ items: [], collections: [], memberships: [] });
 });
 
-it.each(['snapshot', 'batch', 'note'] as const)
+it.each(['snapshot', 'collection-read', 'membership-read', 'batch', 'note', 'collection-batch', 'collection-note'] as const)
 ('reports playlist failure alongside a final %s failure', async (failure) => {
   await seed();
   transport([{ ...playlists[0]!, failure: 404 }, playlists[1]!]);
-  if (failure === 'snapshot') vi.mocked(sqlite.openStorage).mockImplementationOnce((path) => {
+  if (['snapshot', 'collection-read', 'membership-read'].includes(failure)) vi.mocked(sqlite.openStorage).mockImplementationOnce((path) => {
     const store = track(realOpen(path));
-    vi.mocked(store.knowledgeItems.listAll).mockRejectedValue(undefined);
+    if (failure === 'snapshot') vi.mocked(store.knowledgeItems.listAll).mockRejectedValue(undefined);
+    if (failure === 'collection-read') vi.mocked(store.collections.listAll).mockRejectedValue(undefined);
+    if (failure === 'membership-read') vi.mocked(store.collectionMemberships.listAll).mockRejectedValue(undefined);
     return store;
   });
   if (failure === 'batch') vi.spyOn(output, 'exportObsidianNotes').mockRejectedValue(new Error('fake-secret'));
+  if (failure === 'collection-batch') vi.spyOn(collectionOutput, 'exportObsidianCollections').mockRejectedValue(undefined);
   if (failure === 'note') await mkdir(join(vault, buildObsidianRelativePath(prior)), { recursive: true });
+  if (failure === 'collection-note') await mkdir(join(vault, buildObsidianCollectionRelativePath({ source: 'youtube', sourceId: 'PLB', title: 'B' })), { recursive: true });
   const command = cli();
   await expect(command.run(['--vault', vault])).rejects.toMatchObject({ exitCode: 1 });
   expect(command.stdout()).toContain('succeeded=1 failed=1');
   expect(command.stderr()).toContain('Playlist failed');
-  expect(command.stderr()).toMatch(/Obsidian export failed|Obsidian batch export failed|Export failed at index/);
+  expect(command.stderr()).toMatch(/Obsidian export failed|Obsidian batch export failed|Export failed at index|Collection/i);
   expect(command.stderr()).not.toContain('fake-secret');
   expect((await snapshot()).memberships).toHaveLength(2);
   expect(stores[0]!.close).toHaveBeenCalledTimes(1);
+});
+
+it('exports retained collections with no discovered playlists and no items', async () => {
+  const retained = { source: 'other', sourceId: 'collection', title: 'Retained empty collection' };
+  const store = realOpen(database);
+  try { await store.collections.upsert(retained); } finally { store.close(); }
+  transport([]);
+  const result = await syncAllYouTubePlaylists({ vault });
+  expect(result.playlists).toEqual({ discovered: 0, succeeded: 0, failed: 0, unattempted: 0 });
+  expect(result.export).toMatchObject({ status: 'completed', result: { processed: 0 },
+    collections: { status: 'completed', result: { processed: 1, succeeded: 1, failed: 0 } } });
+  expect(await readFile(join(vault, buildObsidianCollectionRelativePath(retained)), 'utf8'))
+    .toContain('# Retained empty collection\n\n_No items._\n');
+});
+
+it('recovers after collection-only output failure without changing persisted memberships', async () => {
+  transport(playlists);
+  const blocked = join(vault, buildObsidianCollectionRelativePath({ source: 'youtube', sourceId: 'PLA', title: 'A' }));
+  await mkdir(blocked, { recursive: true });
+  const first = await syncAllYouTubePlaylists({ vault });
+  expect(first.export).toMatchObject({ status: 'completed', result: { processed: 3, succeeded: 3, failed: 0 },
+    collections: { status: 'completed', result: { processed: 3, succeeded: 2, failed: 1 } } });
+  const persisted = await snapshot();
+  await rmdir(blocked);
+  const second = await syncAllYouTubePlaylists({ vault });
+  expect(second.export).toMatchObject({ status: 'completed', result: { failed: 0 },
+    collections: { status: 'completed', result: { processed: 3, succeeded: 3, failed: 0 } } });
+  expect(await snapshot()).toEqual(persisted);
+  expect(await readFile(blocked, 'utf8')).toContain('[Video X]');
+});
+
+it('still exports collections after an item failure and recovers on the next run', async () => {
+  transport(playlists);
+  const blocked = join(vault, buildObsidianRelativePath({ source: 'youtube', sourceId: 'X', title: 'Video X', url: 'https://www.youtube.com/watch?v=X' }));
+  await mkdir(blocked, { recursive: true });
+  const first = await syncAllYouTubePlaylists({ vault });
+  expect(first.export).toMatchObject({ status: 'completed', result: { failed: 1 },
+    collections: { status: 'completed', result: { processed: 3, succeeded: 3, failed: 0 } } });
+  await rmdir(blocked);
+  const second = await syncAllYouTubePlaylists({ vault });
+  expect(second.export).toMatchObject({ status: 'completed', result: { failed: 0 },
+    collections: { status: 'completed', result: { failed: 0 } } });
+  expect(await readFile(blocked, 'utf8')).toContain('Video X');
 });

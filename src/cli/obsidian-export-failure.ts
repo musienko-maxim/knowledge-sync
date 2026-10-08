@@ -1,4 +1,5 @@
 import type { ObsidianExportFailure } from '../outputs/obsidian/export-notes.js';
+import type { ObsidianCollectionBatchExportResult } from '../outputs/obsidian/export-collections.js';
 
 // Public diagnostics are fixed text; raw messages, paths, causes, and objects may contain secrets.
 function reason(error: unknown): string {
@@ -40,4 +41,8 @@ export function quoteDiagnosticValue(value: string): string {
 /** One line per failed snapshot entry, preserving the application's zero-based index. */
 export function formatObsidianExportFailure(failure: ObsidianExportFailure): string {
   return `Export failed at index ${failure.index} (source=${quoteDiagnosticValue(failure.item.source)}, sourceId=${quoteDiagnosticValue(failure.item.sourceId)}): ${reason(failure.error)}`;
+}
+
+export function formatObsidianCollectionExportFailure(failure: ObsidianCollectionBatchExportResult['failures'][number]): string {
+  return `Collection export failed at index ${failure.index} (source=${quoteDiagnosticValue(failure.collection.source)}, sourceId=${quoteDiagnosticValue(failure.collection.sourceId)}): ${reason(failure.error)}`;
 }
