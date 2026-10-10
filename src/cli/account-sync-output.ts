@@ -4,6 +4,7 @@ import { YouTubeError } from '../collectors/youtube/youtube-error.js';
 import { formatObsidianExportFailure, quoteDiagnosticValue } from './obsidian-export-failure.js';
 import { SyncCommandError } from './youtube-sync.js';
 import { formatCollectionExportOutcome } from './collection-export-output.js';
+import { formatNavigationExportOutcome } from './navigation-export-output.js';
 
 function safeReason(error: unknown): string {
   return error instanceof GoogleAuthError || error instanceof YouTubeError || error instanceof SyncCommandError
@@ -42,10 +43,17 @@ export function formatAccountSyncResult(result: AccountSyncResult): { output: st
   } else if (exported.status === 'skipped') {
     errors.push('Obsidian export skipped because account synchronization stopped.');
   }
+  let navigationFailed = false;
+  if (exported.status !== 'not-requested') {
+    const navigation = formatNavigationExportOutcome(exported.navigation);
+    output.push(navigation.output.trimEnd());
+    if (navigation.errors) errors.push(navigation.errors.trimEnd());
+    navigationFailed = navigation.failed;
+  }
   return {
     output: output.join('\n') + '\n',
     errors: errors.length ? errors.join('\n') + '\n' : '',
-    failed: result.fatal !== undefined || playlists.failed > 0 || exported.status === 'failed' || collectionFailed
+    failed: result.fatal !== undefined || playlists.failed > 0 || exported.status === 'failed' || collectionFailed || navigationFailed
       || (exported.status === 'completed' && exported.result.failed > 0),
   };
 }

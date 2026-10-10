@@ -8,6 +8,14 @@ import type { CollectionMembership } from '../src/core/models/collection-members
 import { exportObsidianNotes, type ObsidianBatchExportResult } from '../src/outputs/obsidian/export-notes.js';
 import { exportObsidianCollections, type ObsidianCollectionBatchExportResult } from '../src/outputs/obsidian/export-collections.js';
 
+import { renderNavigationMarkdown } from '../src/outputs/obsidian/navigation-markdown.js';
+import { writeNavigationNote } from '../src/outputs/obsidian/write-navigation.js';
+
+vi.mock('../src/outputs/obsidian/navigation-markdown.js', () => ({ renderNavigationMarkdown: vi.fn() }));
+vi.mock('../src/outputs/obsidian/write-navigation.js', () => ({ writeNavigationNote: vi.fn() }));
+const renderNavigation = vi.mocked(renderNavigationMarkdown);
+const writeNavigation = vi.mocked(writeNavigationNote);
+
 vi.mock('../src/application/sync-collection.js', () => ({ syncCollection: vi.fn() }));
 vi.mock('../src/outputs/obsidian/export-notes.js', () => ({ exportObsidianNotes: vi.fn() }));
 vi.mock('../src/outputs/obsidian/export-collections.js', () => ({ exportObsidianCollections: vi.fn() }));
@@ -41,6 +49,8 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
+  renderNavigation.mockReset().mockReturnValue('complete navigation');
+  writeNavigation.mockReset().mockResolvedValue(undefined);
   runSync.mockReset().mockResolvedValue(syncResult);
   exportNotes.mockReset().mockResolvedValue(exportResult);
   exportCollections.mockReset().mockResolvedValue(collectionExportResult);
@@ -65,9 +75,11 @@ it('awaits relationship synchronization and reconciliation, full snapshot, and e
   expect(runSync).toHaveBeenCalledExactlyOnceWith(collector, repositories);
   expect(repositories.knowledgeItems.listAll).not.toHaveBeenCalled();
   expect(exportNotes).not.toHaveBeenCalled();
+  expect(writeNavigation).not.toHaveBeenCalled();
   synced.resolve(syncResult);
   await readStarted.promise;
   expect(exportNotes).not.toHaveBeenCalled();
+  expect(writeNavigation).not.toHaveBeenCalled();
   expect(settled).toBe(false);
   read.resolve(snapshot);
   await exportStarted.promise;
@@ -76,6 +88,7 @@ it('awaits relationship synchronization and reconciliation, full snapshot, and e
   expect(repositories.collections.listAll).toHaveBeenCalledExactlyOnceWith();
   expect(repositories.collectionMemberships.listAll).toHaveBeenCalledExactlyOnceWith();
   expect(exportCollections).not.toHaveBeenCalled();
+  expect(writeNavigation).not.toHaveBeenCalled();
   expect(settled).toBe(false);
   exported.resolve(exportResult);
   await collectionExportStarted.promise;
@@ -86,6 +99,10 @@ it('awaits relationship synchronization and reconciliation, full snapshot, and e
   expect(result.sync).toBe(syncResult);
   expect(result.export).toBe(exportResult);
   expect(result.collections).toEqual({ status: 'completed', result: collectionExportResult });
+  expect(result.navigation).toEqual({ status: 'completed' });
+  expect(renderNavigation).toHaveBeenCalledExactlyOnceWith({ items: snapshot, collections, memberships });
+  expect(writeNavigation).toHaveBeenCalledExactlyOnceWith(' relative vault ', 'complete navigation');
+  expect(repositories.knowledgeItems.listAll).toHaveBeenCalledTimes(1);
   expect(collector.collectCollection).not.toHaveBeenCalled();
   expect(repositories.collections.upsert).not.toHaveBeenCalled();
   expect(repositories.collectionMemberships.add).not.toHaveBeenCalled();
@@ -126,6 +143,7 @@ for (const phase of ['sync', 'items', 'collections', 'memberships', 'export'] as
     expect(repositories.knowledgeItems.listAll).toHaveBeenCalledTimes(phase === 'sync' ? 0 : 1);
     expect(exportNotes).toHaveBeenCalledTimes(phase === 'export' ? 1 : 0);
     expect(exportCollections).not.toHaveBeenCalled();
+  expect(writeNavigation).not.toHaveBeenCalled();
   });
 }
 
@@ -138,6 +156,8 @@ it.each([new Error('collection batch failure'), { reason: 'failure' }, undefined
   expect(result.export).toBe(exportResult);
   expect(result.collections).toEqual({ status: 'failed', error });
   if (result.collections.status === 'failed') expect(result.collections.error).toBe(error);
+  expect(result.navigation).toEqual({ status: 'skipped', reason: 'upstream-failure' });
+  expect(writeNavigation).not.toHaveBeenCalled();
 });
 
 it('preserves ordinary collection note failures alongside completed item results', async () => {
@@ -149,4 +169,31 @@ it('preserves ordinary collection note failures alongside completed item results
   expect(result.export).toBe(exportResult);
   expect(result.collections).toEqual({ status: 'completed', result: partial });
   if (result.collections.status === 'completed') expect(result.collections.result).toBe(partial);
+  expect(result.navigation).toEqual({ status: 'completed' });
+});
+
+for (const stage of ['render', 'write'] as const) {
+  it.each([new Error('navigation failed'), undefined])(`forwards the original navigation ${stage} failure (%j)`, async (error) => {
+    const { collector, repositories } = setup();
+    if (stage === 'render') renderNavigation.mockImplementation(() => { throw error; });
+    else writeNavigation.mockRejectedValue(error);
+    const result = await syncCollectionToObsidian(collector, repositories, 'vault');
+    expect(result).toEqual({ sync: syncResult, export: exportResult,
+      collections: { status: 'completed', result: collectionExportResult }, navigation: { status: 'failed', stage, error } });
+    if (result.navigation.status === 'failed') expect(result.navigation.error).toBe(error);
+    expect(repositories.knowledgeItems.listAll).toHaveBeenCalledExactlyOnceWith();
+    expect(repositories.collections.listAll).toHaveBeenCalledExactlyOnceWith();
+    expect(repositories.collectionMemberships.listAll).toHaveBeenCalledExactlyOnceWith();
+  });
+}
+
+it('forwards an empty snapshot skip without attempting navigation', async () => {
+  const { collector, repositories } = setup();
+  repositories.knowledgeItems.listAll.mockResolvedValue([]);
+  repositories.collections.listAll.mockResolvedValue([]);
+  repositories.collectionMemberships.listAll.mockResolvedValue([]);
+  const result = await syncCollectionToObsidian(collector, repositories, 'missing vault');
+  expect(result.navigation).toEqual({ status: 'skipped', reason: 'empty-snapshot' });
+  expect(renderNavigation).not.toHaveBeenCalled();
+  expect(writeNavigation).not.toHaveBeenCalled();
 });

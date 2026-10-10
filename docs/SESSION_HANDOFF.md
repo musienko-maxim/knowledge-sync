@@ -2,7 +2,23 @@
 
 Updated: 2026-10-09
 
-Latest work: PR #5 conflict resolution merges `origin/main` into
+Latest implementation: Task 020 navigation is implemented and automated checks
+pass. Real-world Obsidian acceptance remains pending. See the Task 020 checkpoint
+below; no commits or pushes were made during the resumed work.
+
+Latest real-world milestone: the first real-world YouTube → SQLite → Obsidian E2E validation
+is **VALIDATED**, as recorded in [the milestone brief](../prompts/malestone1.md).
+Tasks 001–018 are **COMPLETED / ACCEPTED**. See the E2E evidence and updated
+roadmap below. That earlier milestone update changed documentation only.
+
+Task 019 — YouTube Transcript Enrichment is **DEFERRED**, **LOW** priority,
+with implementation **NOT STARTED**.
+The [architecture review](task-019-review.md) is retained as historical analysis.
+Revisit when core knowledge collection, synchronization, navigation, and search
+capabilities are sufficiently mature. No acquisition route was selected; no
+implementation or follow-up task is authorized by this deferral.
+
+Previous implementation checkpoint: PR #5 conflict resolution merges `origin/main` into
 `iteration/task-017-18-sync`, preserving the completed Tasks 017 and 018.
 Fresh verification passed; see the current checkpoint below.
 The resumed implementation authorization
@@ -14,6 +30,101 @@ The [Tasks 005–007 checkpoint](sessions/2026-09-28-tasks-005-007-checkpoint.md
 is historical; PR #3 has since been merged.
 The earlier [Task 004 checkpoint](sessions/2026-09-27-task-004-checkpoint.md)
 is a historical record; PR #2 has since been merged.
+
+## Task 020 resumed implementation checkpoint — 2026-10-09
+
+The user's earlier instruction was to read the updated `prompts/task-020.md` and
+start implementation; the current request resumes that work after a usage-limit
+interruption. The task file contains the implementation assignment, replacing
+the detailed specification created earlier. The complete approved contract,
+including its final identity-control escaping refinement, was recovered from
+that session and retained in [task-020-specification.md](task-020-specification.md).
+Its authoring-only status is historical; the current assignment authorizes code,
+tests, documentation, and verification without commits, pushes, or a live run.
+
+Implemented behavior:
+
+- Both export commands now generate one root `Knowledge Sync.md` page after
+  normal item/collection batches, listing every persisted collection and item.
+  Retained/unassociated items stay visible and shared items appear once.
+- Pure display normalization uses NFC, existing control conversion, collapsed
+  whitespace, fallbacks, and ordinal title/source/ID ordering. Duplicate titles
+  receive identity suffixes; canonical paths and existing note bytes are preserved.
+- A dedicated writer recognizes the exact generated-navigation marker and rejects
+  user files, directories, and symlinks. It prepares an exclusively created sibling
+  file, closes it, rechecks ownership, and renames it into place. Failure recovery
+  preserves the previous canonical page and only cleans its own temporary file.
+- Navigation render/write failures retain existing batch results and original
+  errors, including `undefined`. Unexpected item-batch exceptions still propagate;
+  collection-batch exceptions retain item results and explicitly skip navigation.
+  Normal per-note failures still allow navigation. Empty snapshots leave it untouched.
+- Both application flows and CLI commands propagate outcomes. Navigation failure
+  produces safe diagnostics and exit 1; non-export command behavior is unchanged.
+
+Fresh verification:
+
+- `npm.cmd install`: passed, dependencies unchanged. Existing audit output still
+  reports one high-severity finding; no unrelated dependency remediation included.
+- Renderer: 24 passing tests. Writer: 56 passed, three real-symlink cases skipped
+  after Windows returned `EPERM`; deterministic mocked link rejection passes.
+- Projection and application focused suite: 95 passed in four files.
+- CLI focused suite: 192 passed in six files. Its initial sandbox subprocess
+  error (`uv_os_get_passwd ENOMEM`) was resolved by an approved escalated rerun.
+- `npm.cmd test`: **1,082 passed, 4 skipped, 44 files passed**. Skips are the
+  existing POSIX-permissions test on Windows plus the three real-symlink cases.
+- `npm.cmd run typecheck` and `npm.cmd run build`: passed.
+- Built CLI startup, top-level help, and `youtube sync`, `sync-obsidian`, and
+  `sync-all` help: passed.
+- `npm.cmd exec --offline --package=. -- knowledge-sync --help`: passed.
+
+Independent `ks_reviewer` review found no outstanding correctness, safety, or
+scope issues. An in-progress test marker typo was corrected before passing
+verification. The reviewer inspected the final source, tests, documentation, and
+reported evidence read-only. `git diff --check`, new-file whitespace, documentation
+links, and Task 020 handoff paths passed.
+
+Real Windows creation/replacement, unchanged bytes, partial temporary-write,
+close/rename failure preservation, retries, exclusive collision and orphan
+preservation are covered. Command integration uses mocked transport and temporary
+SQLite/vaults, proving user-file preservation, retained database progress, closed
+storage, and recovery. No real SQLite database, Obsidian vault, or YouTube account
+was used. Manual Obsidian click-through acceptance is pending separately.
+
+Task 020 implementation files (including work recovered at resumption):
+
+- New: `src/outputs/obsidian/navigation-markdown.ts`,
+  `src/outputs/obsidian/write-navigation.ts`,
+  `src/cli/navigation-export-output.ts`.
+- Updated: `src/outputs/obsidian/export-projection.ts`,
+  `src/application/sync-collection-to-obsidian.ts`, `src/application/sync-account.ts`,
+  `src/cli/program.ts`, `src/cli/account-sync-output.ts`.
+- New tests: `tests/navigation-markdown.test.ts`,
+  `tests/navigation-export-output.test.ts`, `tests/obsidian-write-navigation.test.ts`,
+  `tests/obsidian-write-navigation.integration.test.ts`.
+- Updated tests: `tests/obsidian-export-projection.test.ts`,
+  `tests/obsidian-projection.integration.test.ts`, `tests/sync-account.test.ts`,
+  `tests/sync-collection-to-obsidian.test.ts`, `tests/cli.test.ts`,
+  `tests/youtube-sync-obsidian.test.ts`, `tests/youtube-sync-all.test.ts`,
+  `tests/youtube-sync-obsidian.integration.test.ts`,
+  `tests/youtube-sync-all.integration.test.ts`.
+- Documentation: `README.md`, `src/outputs/obsidian/README.md`, this handoff,
+  and the recovered `docs/task-020-specification.md`.
+
+The existing `src/{application,auth,cli,collectors,core/models,outputs/obsidian,storage/sqlite}`,
+`tests`, `data`, `docs`, and `prompts` layout is retained. No dependencies, schema,
+canonical path, or synchronization changes; no architecture deviations. The extra
+specification archive restores the lost reviewable contract without replacing the
+user's current implementation assignment.
+
+Known limits: one writer and no concurrent external edits are assumed; target
+rechecks do not eliminate TOCTOU races. No universal power-loss durability is
+promised. Abrupt termination can leave orphan temporary files, deliberately retained.
+Generated page edits are replaceable; empty snapshots can leave an old page, and
+failed note writes can leave unresolved links. Encoded explorer filenames remain.
+
+Unrelated entry-state work was preserved: the Task 019 review/deferral and E2E
+milestone documentation, `prompts/new-inputs.md`, the current task assignment,
+and the deletion of `prompts/task-018.md`. Task 019 and Task 021 were not started.
 
 ## Current state
 
@@ -107,6 +218,88 @@ Task 009 is implemented according to [prompts/task-009-updated.md](../prompts/ta
 including the user's accepted path clarifications appended to that specification.
 Task 008 source/tests and unrelated pre-existing deletions were preserved.
 No commits or pushes were made during Task 009.
+
+## First real-world E2E milestone — 2026-10-09
+
+Status: **VALIDATED**. The user supplied the successful real-run output and manual
+Obsidian confirmation in [prompts/malestone1.md](../prompts/malestone1.md).
+The read-only database inspection was performed earlier in this session.
+No synchronization, database inspection, or vault writes were repeated for this
+documentation update.
+
+Validated local locations (observed run context, not application defaults):
+
+- SQLite: `D:\codex\knowledge-sync\data\knowledge-sync.sqlite`
+- Obsidian vault: `D:\obsidian`
+
+The database inspection used a read-only connection and verified table/column
+names against the project schema and actual SQLite schema. With no supplied
+`--db` override and `DATABASE_PATH` unset, `./data/knowledge-sync.sqlite` resolved
+relative to `D:\codex\knowledge-sync`. No database records were changed.
+
+| Database check | Result |
+| --- | ---: |
+| KnowledgeItems | 52 |
+| Collections | 14 |
+| CollectionMemberships | 52 |
+| Items belonging to more than one Collection | 0 |
+| Duplicate `(source, sourceId)` groups | 0 |
+
+The user reported that repeating this command:
+
+```powershell
+node dist/cli/index.js youtube sync-all --vault "D:\obsidian"
+```
+
+produced:
+
+```text
+Playlists: discovered=14 succeeded=14 failed=0 unattempted=0
+Items: processed=52 new=0 changed=0 unchanged=52
+Memberships: removed=0
+Export: attempted=52 succeeded=52 failed=0
+Collections: attempted=14 succeeded=14 failed=0
+```
+
+The user manually confirmed that generated Markdown files are present, video
+metadata and descriptions are visible, collection index notes are generated,
+and YouTube URLs and metadata are present. The `Sport` collection note links to
+its video note, and clicking that link opens the correct note.
+
+This validates the real collection/persistence/export path and unchanged-item
+classification on a repeated run for this dataset. There were no shared items
+across collections, so this real run does not exercise many-to-many membership.
+No membership removals occurred. Successful export counts do not independently
+prove byte-for-byte file stability; no file comparison was reported. These
+observations supplement the historical automated verification below.
+
+Known UX issue: percent-encoded identifiers in generated filenames make the
+Obsidian file explorer difficult to navigate. Filenames and path-generation
+logic remain unchanged; navigation improvements belong to a separately assigned
+Task 020 review.
+
+## Roadmap and priorities
+
+- **Tasks 001–018:** COMPLETED / ACCEPTED.
+- **Real-world E2E milestone:** VALIDATED.
+- **Task 019:** DEFERRED — transcript enrichment, automatic retrieval, and related
+  exports; implementation NOT STARTED, priority LOW. Retain
+  [the architecture review](task-019-review.md) for a future revisit.
+- **Task 020:** IMPLEMENTED / AUTOMATED VALIDATION PASSED — readable Obsidian
+  navigation. Manual real-world acceptance is pending separately.
+
+| Priority | Direction |
+| --- | --- |
+| P0 | Maintain reliable YouTube → SQLite → Obsidian synchronization. |
+| P1 | Improve Obsidian usability and navigation. |
+| P2 | Search and local KnowledgeItem browsing. |
+| Backlog | Additional knowledge sources. |
+| Deferred | Transcript enrichment, automatic transcript retrieval, and related exports. |
+
+Revisit transcripts when core knowledge collection, synchronization, navigation,
+and search capabilities are sufficiently mature. No separate TODO/backlog
+document was found; this handoff remains the roadmap rather than introducing a
+new backlog system. Each future task still requires an explicit assignment.
 
 ## Important architecture
 
@@ -1160,16 +1353,25 @@ helpers, not application agents or automatic task execution.
 
 ## Next-session guidance
 
+Task 019 is deferred by the user's 2026-10-09 decision. Do not resume transcript
+implementation or acquisition research without a new assignment. Its potential
+scope, including future search/RAG, is backlog context only and does not change
+the current MVP constraints. Task 020 implementation and automated validation are
+complete; see its checkpoint above. Manual real-world acceptance requires a
+separate assignment. Do not restart implementation or begin another task.
+
 Read this handoff and the explicitly assigned task specification before changing
 code. Tasks 017 and 018 implementation, validation, documentation, and independent
-review are complete. The current specification is [prompts/task-018.md](../prompts/task-018.md),
-with accepted implementation decisions in [its review](task-018-review.md).
+review are complete. The historical specification was `prompts/task-018.md`
+(currently locally deleted); accepted implementation decisions remain in
+[its review](task-018-review.md).
 Their changes are committed in `e9a86b7`; see the current PR #5 checkpoint above.
 The previous checkpoint contains the prepared Tasks 008–016 PR description and
 historical validation evidence; check actual Git/upstream/PR state if assigned
 publication work.
 Task 010 code and tests were already present at Task 011
-entry; do not infer historical acceptance from their presence. Work only on an
+entry; the milestone brief now records Tasks 001–018 as accepted, without
+reconstructing a separate historical Task 010 acceptance record. Work only on an
 explicitly assigned task. Import-state orchestration remains unimplemented.
 Do not begin the next task without a separate explicit assignment. The later PR #5
 conflict-resolution request authorizes its merge commit and push; Task 018's earlier

@@ -9,6 +9,14 @@ import type { KnowledgeItem } from '../src/core/models/knowledge-item.js';
 import { exportObsidianNotes, type ObsidianBatchExportResult } from '../src/outputs/obsidian/export-notes.js';
 import { exportObsidianCollections, type ObsidianCollectionBatchExportResult } from '../src/outputs/obsidian/export-collections.js';
 
+import { renderNavigationMarkdown } from '../src/outputs/obsidian/navigation-markdown.js';
+import { writeNavigationNote } from '../src/outputs/obsidian/write-navigation.js';
+
+vi.mock('../src/outputs/obsidian/navigation-markdown.js', () => ({ renderNavigationMarkdown: vi.fn() }));
+vi.mock('../src/outputs/obsidian/write-navigation.js', () => ({ writeNavigationNote: vi.fn() }));
+const renderNavigation = vi.mocked(renderNavigationMarkdown);
+const writeNavigation = vi.mocked(writeNavigationNote);
+
 vi.mock('../src/application/sync-collection.js', () => ({ syncCollection: vi.fn() }));
 vi.mock('../src/outputs/obsidian/export-notes.js', () => ({ exportObsidianNotes: vi.fn() }));
 vi.mock('../src/outputs/obsidian/export-collections.js', () => ({ exportObsidianCollections: vi.fn() }));
@@ -51,6 +59,8 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
+  renderNavigation.mockReset().mockReturnValue('complete navigation');
+  writeNavigation.mockReset().mockResolvedValue(undefined);
   runSync.mockReset().mockResolvedValue(oneCollection);
   exportNotes.mockReset().mockResolvedValue(exported);
   exportCollections.mockReset().mockResolvedValue(exportedCollections);
@@ -71,6 +81,7 @@ it('reuses complete playlist sync in discovery order and sums successful process
   expect(runSync.mock.calls).toEqual(collectors.map((collector) => [collector, repositories]));
   expect(repositories.knowledgeItems.listAll).not.toHaveBeenCalled();
   expect(exportNotes).not.toHaveBeenCalled();
+  expect(writeNavigation).not.toHaveBeenCalled();
 });
 
 it('counts one empty playlist as successful', async () => {
@@ -112,17 +123,19 @@ it('awaits complete discovery, each playlist, snapshot, and final export before 
   expect(runSync).toHaveBeenCalledTimes(2);
   expect(repositories.knowledgeItems.listAll).not.toHaveBeenCalled();
   expect(exportNotes).not.toHaveBeenCalled();
+  expect(writeNavigation).not.toHaveBeenCalled();
   second.resolve(oneCollection);
   await readStarted.promise;
   expect(repositories.knowledgeItems.listAll).toHaveBeenCalledExactlyOnceWith();
   expect(exportNotes).not.toHaveBeenCalled();
+  expect(writeNavigation).not.toHaveBeenCalled();
   read.resolve(snapshot);
   await exportStarted.promise;
   expect(exportNotes).toHaveBeenCalledExactlyOnceWith(' relative vault ', snapshot);
   expect(exportNotes.mock.calls[0]![1]).toBe(snapshot);
   expect(settled).toBe(false);
   exportedResult.resolve(exported);
-  expect((await running).export).toEqual({ status: 'completed', result: exported, collections: collectionOutcome });
+  expect((await running).export).toEqual({ status: 'completed', result: exported, collections: collectionOutcome, navigation: { status: 'completed' } });
 });
 
 it.each([undefined, 'vault'])('handles zero playlists with requested export = %j', async (vault) => {
@@ -137,8 +150,9 @@ it.each([undefined, 'vault'])('handles zero playlists with requested export = %j
     expect(result.export).toEqual({ status: 'not-requested' });
     expect(repositories.knowledgeItems.listAll).not.toHaveBeenCalled();
     expect(exportNotes).not.toHaveBeenCalled();
+  expect(writeNavigation).not.toHaveBeenCalled();
   } else {
-    expect(result.export).toEqual({ status: 'completed', result: exported, collections: collectionOutcome });
+    expect(result.export).toEqual({ status: 'completed', result: exported, collections: collectionOutcome, navigation: { status: 'completed' } });
     expect(repositories.knowledgeItems.listAll).toHaveBeenCalledExactlyOnceWith();
     expect(exportNotes).toHaveBeenCalledExactlyOnceWith(vault, snapshot);
   }
@@ -150,7 +164,7 @@ it.each([new Error('Discovery failed'), { reason: 'Discovery failed' }, undefine
   source.discover.mockRejectedValue(error);
   const result = await syncAccount(source, repositories, 'vault');
   expect(result).toEqual({ playlists: { discovered: 0, succeeded: 0, failed: 0, unattempted: 0 },
-    items: empty, membershipsRemoved: 0, failures: [], fatal: { stage: 'discovery', error }, export: { status: 'skipped' } });
+    items: empty, membershipsRemoved: 0, failures: [], fatal: { stage: 'discovery', error }, export: { status: 'skipped', navigation: { status: 'skipped', reason: 'upstream-failure' } } });
   expect(result.fatal!.error).toBe(error);
   expect(source.createCollector).not.toHaveBeenCalled();
   expect(runSync).not.toHaveBeenCalled();
@@ -159,6 +173,7 @@ it.each([new Error('Discovery failed'), { reason: 'Discovery failed' }, undefine
   expect(repositories.collectionMemberships.add).not.toHaveBeenCalled();
   expect(repositories.knowledgeItems.listAll).not.toHaveBeenCalled();
   expect(exportNotes).not.toHaveBeenCalled();
+  expect(writeNavigation).not.toHaveBeenCalled();
 });
 
 it.each([[0], [1], [2], [0, 2], [0, 1, 2]])
@@ -179,7 +194,7 @@ it.each([[0], [1], [2], [0, 2], [0, 1, 2]])
   for (const [index, failure] of result.failures.entries()) expect(failure.error).toBe(errors[failedIndexes[index]!]);
   expect(result).not.toHaveProperty('fatal');
   expect(runSync).toHaveBeenCalledTimes(3);
-  expect(result.export).toEqual({ status: 'completed', result: exported, collections: collectionOutcome });
+  expect(result.export).toEqual({ status: 'completed', result: exported, collections: collectionOutcome, navigation: { status: 'completed' } });
   expect(repositories.knowledgeItems.listAll).toHaveBeenCalledExactlyOnceWith();
   expect(exportNotes).toHaveBeenCalledExactlyOnceWith('vault', snapshot);
 });
@@ -206,11 +221,12 @@ it.each([new Error('Authentication failed'), undefined])
   expect(result.failures).toEqual([{ playlistId: 'B', playlistTitle: 'Playlist B', error }]);
   expect(result.fatal).toEqual({ stage: 'playlist', error });
   expect(result.fatal!.error).toBe(error);
-  expect(result.export).toEqual({ status: 'skipped' });
+  expect(result.export).toEqual({ status: 'skipped', navigation: { status: 'skipped', reason: 'upstream-failure' } });
   expect(runSync).toHaveBeenCalledTimes(2);
   expect(source.createCollector).toHaveBeenCalledTimes(2);
   expect(repositories.knowledgeItems.listAll).not.toHaveBeenCalled();
   expect(exportNotes).not.toHaveBeenCalled();
+  expect(writeNavigation).not.toHaveBeenCalled();
 });
 
 it('retains earlier recoverable failures when a later storage error stops the account', async () => {
@@ -228,6 +244,7 @@ it('retains earlier recoverable failures when a later storage error stops the ac
   expect(runSync).toHaveBeenCalledTimes(3);
   expect(repositories.knowledgeItems.listAll).not.toHaveBeenCalled();
   expect(exportNotes).not.toHaveBeenCalled();
+  expect(writeNavigation).not.toHaveBeenCalled();
 });
 
 it('treats structured constraint errors as recoverable playlist failures', async () => {
@@ -237,7 +254,7 @@ it('treats structured constraint errors as recoverable playlist failures', async
   const result = await syncAccount(source, repositories, 'vault');
   expect(result.playlists).toEqual({ discovered: 3, succeeded: 2, failed: 1, unattempted: 0 });
   expect(result).not.toHaveProperty('fatal');
-  expect(result.export).toEqual({ status: 'completed', result: exported, collections: collectionOutcome });
+  expect(result.export).toEqual({ status: 'completed', result: exported, collections: collectionOutcome, navigation: { status: 'completed' } });
 });
 
 for (const phase of ['items', 'collections', 'memberships', 'batch'] as const) {
@@ -255,12 +272,13 @@ for (const phase of ['items', 'collections', 'memberships', 'batch'] as const) {
     expect(result.items).toEqual({ processed: 2, new: 2, changed: 0, unchanged: 0 });
     expect(result.membershipsRemoved).toBe(4);
     expect(result.failures[0]!.error).toBe(playlistError);
-    expect(result.export).toEqual({ status: 'failed', stage: phase === 'batch' ? 'batch' : 'snapshot', error });
+    expect(result.export).toEqual({ status: 'failed', stage: phase === 'batch' ? 'batch' : 'snapshot', error, navigation: { status: 'skipped', reason: 'upstream-failure' } });
     if (result.export.status === 'failed') expect(result.export.error).toBe(error);
     expect(result).not.toHaveProperty('fatal');
     expect(repositories.knowledgeItems.listAll).toHaveBeenCalledExactlyOnceWith();
     expect(exportNotes).toHaveBeenCalledTimes(phase === 'batch' ? 1 : 0);
     expect(exportCollections).not.toHaveBeenCalled();
+  expect(writeNavigation).not.toHaveBeenCalled();
   });
 }
 
@@ -273,7 +291,7 @@ it('preserves partial export result and playlist errors without retries', async 
   exportNotes.mockResolvedValue(partial);
   const result = await syncAccount(source, repositories, 'vault');
   expect(result.failures[0]!.error).toBe(playlistError);
-  expect(result.export).toEqual({ status: 'completed', result: partial, collections: collectionOutcome });
+  expect(result.export).toEqual({ status: 'completed', result: partial, collections: collectionOutcome, navigation: { status: 'completed' } });
   if (result.export.status === 'completed') expect(result.export.result).toBe(partial);
   expect(exportNotes).toHaveBeenCalledTimes(1);
   expect(exportCollections).toHaveBeenCalledTimes(1);
@@ -289,7 +307,8 @@ it.each([new Error('Collection batch failed'), { detail: 'failed' }, undefined])
   expect(result.playlists).toEqual({ discovered: 3, succeeded: 2, failed: 1, unattempted: 0 });
   expect(result.items).toEqual({ processed: 2, new: 2, changed: 0, unchanged: 0 });
   expect(result.failures[0]!.error).toBe(playlistError);
-  expect(result.export).toEqual({ status: 'failed', stage: 'collections', result: exported, error });
+  expect(result.export).toEqual({ status: 'failed', stage: 'collections', result: exported, error, navigation: { status: 'skipped', reason: 'upstream-failure' } });
+  expect(writeNavigation).not.toHaveBeenCalled();
   if (result.export.status === 'failed' && result.export.stage === 'collections') {
     expect(result.export.result).toBe(exported);
     expect(result.export.error).toBe(error);
@@ -309,5 +328,34 @@ it('retains collection note failures alongside ordinary item failures and playli
   const result = await syncAccount(source, repositories, 'vault');
   expect(result.failures[0]!.error).toBe(playlistError);
   expect(result.export).toEqual({ status: 'completed', result: partialItems,
-    collections: { status: 'completed', result: partialCollections } });
+    collections: { status: 'completed', result: partialCollections }, navigation: { status: 'completed' } });
+});
+
+for (const stage of ['render', 'write'] as const) {
+  it.each([new Error('navigation failed'), undefined])(`retains sync and export results after navigation ${stage} failure (%j)`, async (error) => {
+    const { source, repositories } = setup();
+    if (stage === 'render') renderNavigation.mockImplementation(() => { throw error; });
+    else writeNavigation.mockRejectedValue(error);
+    const result = await syncAccount(source, repositories, 'vault');
+    expect(result.playlists).toEqual({ discovered: 3, succeeded: 3, failed: 0, unattempted: 0 });
+    expect(result.export).toEqual({ status: 'completed', result: exported,
+      collections: collectionOutcome, navigation: { status: 'failed', stage, error } });
+    if (result.export.status === 'completed' && result.export.navigation.status === 'failed') {
+      expect(result.export.navigation.error).toBe(error);
+    }
+    expect(repositories.knowledgeItems.listAll).toHaveBeenCalledExactlyOnceWith();
+    expect(repositories.collections.listAll).toHaveBeenCalledExactlyOnceWith();
+    expect(repositories.collectionMemberships.listAll).toHaveBeenCalledExactlyOnceWith();
+    expect(renderNavigation).toHaveBeenCalledExactlyOnceWith({ items: snapshot, collections: playlists, memberships: [] });
+  });
+}
+
+it('forwards an empty snapshot skip without navigation work', async () => {
+  const { source, repositories } = setup([]);
+  repositories.knowledgeItems.listAll.mockResolvedValue([]);
+  repositories.collections.listAll.mockResolvedValue([]);
+  const result = await syncAccount(source, repositories, 'missing vault');
+  expect(result.export).toMatchObject({ status: 'completed', navigation: { status: 'skipped', reason: 'empty-snapshot' } });
+  expect(renderNavigation).not.toHaveBeenCalled();
+  expect(writeNavigation).not.toHaveBeenCalled();
 });

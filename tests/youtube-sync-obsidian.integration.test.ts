@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm, rmdir } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { Command } from 'commander';
@@ -91,8 +91,13 @@ it('runs the command through real persistence and full-snapshot export including
   transport();
   const command = cli();
   await command.run(['--db', database, '--vault', vault]);
-  expect(command.output()).toBe('Sync: processed=1 new=1 changed=0 unchanged=0\nMemberships: removed=0\nExport: attempted=2 succeeded=2 failed=0\nCollections: attempted=1 succeeded=1 failed=0\n');
+  expect(command.output()).toBe('Sync: processed=1 new=1 changed=0 unchanged=0\nMemberships: removed=0\nExport: attempted=2 succeeded=2 failed=0\nCollections: attempted=1 succeeded=1 failed=0\nNavigation: succeeded=1 failed=0\n');
   expect(command.errors()).toBe('');
+  const navigation = await readFile(join(vault, 'Knowledge Sync.md'), 'utf8');
+  expect(navigation).toContain('<!-- knowledge-sync:generated-navigation:v1 -->\n');
+  expect(navigation).toContain('Previously stored');
+  expect(navigation).toContain('Video A');
+  expect(navigation).toContain('Playlist');
   expect(config.loadGoogleClientConfig).not.toHaveBeenCalled();
   await expectClosed();
   const persisted = realOpen(database);
@@ -123,13 +128,53 @@ it('supports OAuth without an API key through the real collector and output pipe
   await expectClosed();
 });
 
+it('refuses user navigation content, retains committed data and note results, then succeeds on retry', async () => {
+  const target = join(vault, 'Knowledge Sync.md');
+  const userContent = 'Personal dashboard\nprivate content\n';
+  await writeFile(target, userContent);
+  transport();
+  const first = cli();
+  await expect(first.run()).rejects.toMatchObject({ exitCode: 1, code: 'knowledge-sync.obsidian-export' });
+  expect(first.output()).toBe('Sync: processed=1 new=1 changed=0 unchanged=0\nMemberships: removed=0\nExport: attempted=1 succeeded=1 failed=0\nCollections: attempted=1 succeeded=1 failed=0\nNavigation: succeeded=0 failed=1\n');
+  expect(first.errors()).toContain('Navigation export refused: Knowledge Sync.md is not a recognized generated page.\n');
+  expect(first.errors()).not.toMatch(/private content|YouTube command failed/);
+  expect(first.errors()).not.toContain(vault);
+  expect(await readFile(target, 'utf8')).toBe(userContent);
+  const notePath = join(vault, buildObsidianRelativePath(video));
+  const note = await readFile(notePath, 'utf8');
+  const persisted = realOpen(database);
+  let before;
+  try {
+    before = { items: await persisted.knowledgeItems.listAll(), collections: await persisted.collections.listAll(), memberships: await persisted.collectionMemberships.listAll() };
+    expect(before.items).toHaveLength(1);
+    expect(before.collections).toHaveLength(1);
+    expect(before.memberships).toHaveLength(1);
+  } finally { persisted.close(); }
+  await expectClosed();
+  await rename(target, join(vault, 'Personal dashboard.md'));
+  transport();
+  const retry = cli();
+  await retry.run();
+  expect(retry.output()).toContain('Sync: processed=1 new=0 changed=0 unchanged=1');
+  expect(retry.output()).toContain('Navigation: succeeded=1 failed=0\n');
+  expect(retry.errors()).toBe('');
+  expect(await readFile(target, 'utf8')).toContain('<!-- knowledge-sync:generated-navigation:v1 -->\n');
+  expect(await readFile(notePath, 'utf8')).toBe(note);
+  expect(await readFile(join(vault, 'Personal dashboard.md'), 'utf8')).toBe(userContent);
+  const reopened = realOpen(database);
+  try {
+    expect({ items: await reopened.knowledgeItems.listAll(), collections: await reopened.collections.listAll(), memberships: await reopened.collectionMemberships.listAll() }).toEqual(before);
+  } finally { reopened.close(); }
+  await expectClosed();
+});
+
 it('reports a returned write failure once, closes storage, and exports unchanged data on the next command', async () => {
   const destination = join(vault, buildObsidianRelativePath(video));
   await mkdir(destination, { recursive: true });
   transport();
   const first = cli();
   await expect(first.run()).rejects.toMatchObject({ exitCode: 1, code: 'knowledge-sync.obsidian-export' });
-  expect(first.output()).toBe('Sync: processed=1 new=1 changed=0 unchanged=0\nMemberships: removed=0\nExport: attempted=1 succeeded=0 failed=1\nCollections: attempted=1 succeeded=1 failed=0\n');
+  expect(first.output()).toBe('Sync: processed=1 new=1 changed=0 unchanged=0\nMemberships: removed=0\nExport: attempted=1 succeeded=0 failed=1\nCollections: attempted=1 succeeded=1 failed=0\nNavigation: succeeded=1 failed=0\n');
   expect(first.errors()).toContain('index 0 (source="youtube", sourceId="videoA")');
   expect(first.errors().match(/Export failed at index/g)).toHaveLength(1);
   expect(first.errors()).not.toMatch(/YouTube command failed|fake-/);
@@ -147,7 +192,7 @@ it('reports a returned write failure once, closes storage, and exports unchanged
   transport();
   const later = cli();
   await later.run();
-  expect(later.output()).toBe('Sync: processed=1 new=0 changed=0 unchanged=1\nMemberships: removed=0\nExport: attempted=1 succeeded=1 failed=0\nCollections: attempted=1 succeeded=1 failed=0\n');
+  expect(later.output()).toBe('Sync: processed=1 new=0 changed=0 unchanged=1\nMemberships: removed=0\nExport: attempted=1 succeeded=1 failed=0\nCollections: attempted=1 succeeded=1 failed=0\nNavigation: succeeded=1 failed=0\n');
   expect(later.errors()).toBe('');
   expect(await readFile(destination, 'utf8')).toContain('# Video A');
   await expectClosed();
@@ -157,7 +202,7 @@ it('fails collection export for an empty playlist and nonexistent vault', async 
   transport(true);
   const command = cli();
   await expect(command.run(['--vault', join(directory, 'missing')])).rejects.toMatchObject({ exitCode: 1, code: 'knowledge-sync.obsidian-export' });
-  expect(command.output()).toBe('Sync: processed=0 new=0 changed=0 unchanged=0\nMemberships: removed=0\nExport: attempted=0 succeeded=0 failed=0\nCollections: attempted=1 succeeded=0 failed=1\n');
+  expect(command.output()).toBe('Sync: processed=0 new=0 changed=0 unchanged=0\nMemberships: removed=0\nExport: attempted=0 succeeded=0 failed=0\nCollections: attempted=1 succeeded=0 failed=1\nNavigation: succeeded=0 failed=1\n');
   expect(command.errors()).toContain('Collection export failed at index 0');
   expect(await readdir(directory)).not.toContain('missing');
   await expectClosed();

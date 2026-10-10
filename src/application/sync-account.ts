@@ -1,7 +1,7 @@
 import type { AccountSyncSource } from '../collectors/account-sync-source.js';
 import type { KnowledgeCollection } from '../core/models/knowledge-collection.js';
 import type { ObsidianBatchExportResult } from '../outputs/obsidian/export-notes.js';
-import { exportObsidianProjection, type CollectionExportOutcome } from '../outputs/obsidian/export-projection.js';
+import { exportObsidianProjection, type CollectionExportOutcome, type NavigationExportOutcome } from '../outputs/obsidian/export-projection.js';
 import { isFatalStorageError } from '../storage/storage-error.js';
 import { syncCollection, type CollectionSyncRepositories } from './sync-collection.js';
 import type { SyncResult } from './sync.js';
@@ -13,12 +13,14 @@ export interface PlaylistSyncFailure {
   error: unknown;
 }
 
+type SkippedNavigation = Extract<NavigationExportOutcome, { status: 'skipped' }>;
+
 export type AccountExportOutcome =
   | { status: 'not-requested' }
-  | { status: 'skipped' }
-  | { status: 'completed'; result: ObsidianBatchExportResult; collections?: CollectionExportOutcome }
-  | { status: 'failed'; stage: 'snapshot' | 'batch'; error: unknown }
-  | { status: 'failed'; stage: 'collections'; result: ObsidianBatchExportResult; error: unknown };
+  | { status: 'skipped'; navigation: SkippedNavigation }
+  | { status: 'completed'; result: ObsidianBatchExportResult; collections?: CollectionExportOutcome; navigation: NavigationExportOutcome }
+  | { status: 'failed'; stage: 'snapshot' | 'batch'; error: unknown; navigation: SkippedNavigation }
+  | { status: 'failed'; stage: 'collections'; result: ObsidianBatchExportResult; error: unknown; navigation: SkippedNavigation };
 
 export interface AccountSyncResult {
   playlists: { discovered: number; succeeded: number; failed: number; unattempted: number };
@@ -37,12 +39,13 @@ export async function syncAccount(
   repositories: CollectionSyncRepositories,
   vaultPath?: string,
 ): Promise<AccountSyncResult> {
+  const skippedNavigation: SkippedNavigation = { status: 'skipped', reason: 'upstream-failure' };
   const result: AccountSyncResult = {
     playlists: { discovered: 0, succeeded: 0, failed: 0, unattempted: 0 },
     items: { processed: 0, new: 0, changed: 0, unchanged: 0 },
     membershipsRemoved: 0,
     failures: [],
-    export: { status: vaultPath === undefined ? 'not-requested' : 'skipped' },
+    export: vaultPath === undefined ? { status: 'not-requested' } : { status: 'skipped', navigation: skippedNavigation },
   };
   let collections: readonly KnowledgeCollection[];
   try {
@@ -77,16 +80,16 @@ export async function syncAccount(
     try {
       snapshot = await readObsidianSnapshot(repositories);
     } catch (error) {
-      result.export = { status: 'failed', stage: 'snapshot', error };
+      result.export = { status: 'failed', stage: 'snapshot', error, navigation: skippedNavigation };
       return result;
     }
     try {
       const projection = await exportObsidianProjection(vaultPath, snapshot);
       result.export = projection.collections.status === 'failed'
-        ? { status: 'failed', stage: 'collections', result: projection.items, error: projection.collections.error }
-        : { status: 'completed', result: projection.items, collections: projection.collections };
+        ? { status: 'failed', stage: 'collections', result: projection.items, error: projection.collections.error, navigation: skippedNavigation }
+        : { status: 'completed', result: projection.items, collections: projection.collections, navigation: projection.navigation };
     } catch (error) {
-      result.export = { status: 'failed', stage: 'batch', error };
+      result.export = { status: 'failed', stage: 'batch', error, navigation: skippedNavigation };
     }
   }
   return result;
