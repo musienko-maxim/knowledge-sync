@@ -1,10 +1,11 @@
 # Project Session Handoff
 
-Updated: 2026-10-09
+Updated: 2026-10-10
 
-Latest implementation: Task 020 navigation is implemented and automated checks
-pass. Real-world Obsidian acceptance remains pending. See the Task 020 checkpoint
-below; no commits or pushes were made during the resumed work.
+Latest implementation: the user confirmed Task 020 is finished on 2026-10-10
+and requested conflict resolution and merge of PR #6. Fresh automated checks
+pass. See the PR #6 checkpoint below; earlier no-commit/no-push statements
+describe the implementation session before this publication authorization.
 
 Latest real-world milestone: the first real-world YouTube → SQLite → Obsidian E2E validation
 is **VALIDATED**, as recorded in [the milestone brief](../prompts/malestone1.md).
@@ -30,6 +31,39 @@ The [Tasks 005–007 checkpoint](sessions/2026-09-28-tasks-005-007-checkpoint.md
 is historical; PR #3 has since been merged.
 The earlier [Task 004 checkpoint](sessions/2026-09-27-task-004-checkpoint.md)
 is a historical record; PR #2 has since been merged.
+
+## PR #6 conflict-resolution checkpoint — 2026-10-10
+
+The user created [PR #6](https://github.com/musienko-maxim/knowledge-sync/pull/6)
+from `task22` at `36ddc3b` and explicitly authorized resolving conflicts and
+merging it. The working tree was clean at entry. Despite the branch/PR naming,
+the implemented feature is Task 020 navigation; the Facebook draft in
+`prompts/task-022.md` remains unimplemented.
+
+Fetched `origin/main` at `b6153b5`, the squash merge of PR #5. Its complete tree
+is identical to ancestor `4b5250c` on this branch. The squash ancestry caused
+16 conflicted files and reintroduced the previously deleted
+`prompts/task-018.md`. Resolution preserves all original PR files and that
+deletion. Before this handoff update, both index and working tree exactly
+matched `36ddc3b`; no independent main changes were lost.
+
+Fresh checks: `npm.cmd install`, full Vitest suite (**1,082 passed, 4 skipped,
+44 files**), typecheck, build, built CLI startup, and top-level plus YouTube
+sync command help all passed. Skips remain the Windows POSIX-permissions case
+and three real-symlink cases. Dependency installation changed no dependencies;
+the existing one-high-severity audit finding remains outside this merge scope.
+No real account, SQLite database, or Obsidian vault was used.
+
+`npm.cmd exec --offline --package=. -- knowledge-sync --help` passed on an
+approved escalated rerun after the sandboxed invocation stalled and was stopped.
+Independent read-only review found no actionable conflict-resolution issues;
+`git diff --check` passed.
+
+No runtime, test, schema, dependency, or directory-layout changes were needed.
+The existing `src/{application,auth,cli,collectors,core/models,outputs/obsidian,storage/sqlite}`,
+`tests`, `data`, `docs`, and `prompts` layout is retained. No specification
+deviations. Publication uses normal merge ancestry; check PR #6 and Git for
+the final merge and publication state.
 
 ## Task 020 resumed implementation checkpoint — 2026-10-09
 
