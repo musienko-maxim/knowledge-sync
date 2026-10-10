@@ -9,6 +9,7 @@ import type { YouTubeSyncAllOptions } from './youtube-sync-all.js';
 import type { AccountSyncResult } from '../application/sync-account.js';
 import { formatAccountSyncResult } from './account-sync-output.js';
 import { formatCollectionExportOutcome } from './collection-export-output.js';
+import { formatNavigationExportOutcome } from './navigation-export-output.js';
 
 export function createProgram(commands: YouTubeCommands = youtubeCommands): Command {
   const program = new Command()
@@ -68,8 +69,11 @@ export function createProgram(commands: YouTubeCommands = youtubeCommands): Comm
       const collections = formatCollectionExportOutcome(result.collections);
       if (collections.output) program.configureOutput().writeOut?.(collections.output);
       if (collections.errors) program.configureOutput().writeErr?.(collections.errors);
+      const navigation = formatNavigationExportOutcome(result.navigation);
+      if (navigation.output) program.configureOutput().writeOut?.(navigation.output);
+      if (navigation.errors) program.configureOutput().writeErr?.(navigation.errors);
       // Outside the fatal-error catch: exitOverride must not turn this into a second error.
-      if (result.export.failed > 0 || collections.failed) {
+      if (result.export.failed > 0 || collections.failed || navigation.failed) {
         program.error('Obsidian export incomplete; successful SQLite writes remain committed.',
           { exitCode: 1, code: 'knowledge-sync.obsidian-export' });
       }

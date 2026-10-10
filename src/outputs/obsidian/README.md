@@ -111,3 +111,41 @@ unexpected batch exceptions are retained alongside the accumulated playlist
 results, while individual note failures keep the existing batch result semantics.
 The selected database's entire item/collection/membership snapshot is the projection
 source; completed item results also survive unexpected collection-batch exceptions.
+
+Task 020 extends the shared projection with a root `Knowledge Sync.md` page.
+[renderNavigationMarkdown](navigation-markdown.ts) is pure and uses the validated
+snapshot's items and collections, including retained/unassociated items exactly
+once. It normalizes display titles (NFC, existing control conversion, whitespace
+collapse), supplies empty-title fallbacks, and sorts by display title plus raw
+source/ID. Duplicate titles get escaped identity suffixes. Canonical path builders
+and separate Markdown destination encoding preserve existing paths and note bytes.
+
+[writeNavigationNote](write-navigation.ts) accepts only complete generated content
+and a fixed target filename. `lstat` rejects directories and symlinks, including
+dangling links. Replacement requires the exact first-line ownership marker
+`<!-- knowledge-sync:generated-navigation:v1 -->`, optionally preceded by one BOM
+and followed by LF, CRLF, or EOF. Other regular files are preserved.
+An exclusively created sibling temporary file is fully written and closed before
+the destination is rechecked and replaced with `rename`. No canonical truncation,
+delete-then-rename fallback, or broad temporary cleanup is used. Preparation and
+replacement failures retain the previous page and original error. Only the current
+invocation's temporary file is eligible for cleanup. Abrupt termination or cleanup
+failure may leave an orphan; a later run preserves it and uses a new name.
+
+This writer assumes one active writer with no external edits to the vault root,
+target, or temporary file. The recheck is not a lock and leaves TOCTOU races; no
+general ancestor/reparse-point hardening or universal power-loss durability is
+claimed. Generated page edits can be replaced. Byte stability does not imply
+unchanged modification times or ACL preservation.
+
+The projection returns a required `navigation` outcome: `completed`, `failed`
+with `render`/`write` stage and original error, or `skipped` with `empty-snapshot`
+or `upstream-failure` reason. Both normal batches complete before one navigation
+attempt, including after individual note failures. Unexpected item-batch errors
+still propagate; collection-batch errors retain completed item results and skip
+navigation. A valid fully empty snapshot skips rendering and filesystem access,
+leaving previous navigation untouched. Failed notes can leave unresolved links.
+Both affected application operations retain these outcomes; both export CLIs
+print a separate navigation summary and exit nonzero on navigation failure.
+An account export without `--vault` retains `not-requested` without navigation.
+The generic item-only APIs remain unchanged.

@@ -217,7 +217,7 @@ describe('OAuth account sync composition', () => {
       playlists: { discovered: 3, succeeded: 1, failed: 1, unattempted: 1 },
       failures: [{ playlistId: 'PLtwo', error: undefined }],
       fatal: { stage: 'playlist', error: undefined },
-      export: { status: 'skipped' },
+      export: { status: 'skipped', navigation: { status: 'skipped', reason: 'upstream-failure' } },
     };
     sync.mockResolvedValue(partial);
     expect(await syncAllYouTubePlaylists({ vault })).toBe(partial);

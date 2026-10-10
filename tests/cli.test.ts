@@ -4,6 +4,10 @@ import { GoogleAuthError } from '../src/auth/google-client-config.js';
 import type { YouTubeCommands } from '../src/cli/youtube.js';
 import { SyncCommandError } from '../src/cli/youtube-sync.js';
 import { YouTubeError } from '../src/collectors/youtube/youtube-error.js';
+import type { NavigationExportOutcome } from '../src/outputs/obsidian/export-projection.js';
+
+const completedNavigation = { status: 'completed' } as const;
+const skippedNavigation = { status: 'skipped', reason: 'upstream-failure' } as const;
 
 it('prints help without requiring configuration or opening storage', () => {
   let output = '';
@@ -35,6 +39,7 @@ function setupCommands() {
       failures: [], export: { status: 'not-requested' },
     }),
     syncObsidian: vi.fn<YouTubeCommands['syncObsidian']>().mockResolvedValue({
+      navigation: completedNavigation,
       collections: { status: 'completed', result: { processed: 1, succeeded: 1, failed: 0, failures: [] } },
       sync: { membershipsRemoved: 0, processed: 3, new: 1, changed: 1, unchanged: 1 },
       export: { processed: 5, succeeded: 5, failed: 0, failures: [] },
@@ -55,6 +60,17 @@ function setupCommands() {
 }
 
 describe('account sync CLI', () => {
+  it.each(['snapshot', 'batch'] as const)('prints skipped navigation after an earlier %s failure', async (stage) => {
+    const { commands, program, output, errors } = setupCommands();
+    const base = await commands.syncAll({});
+    commands.syncAll.mockResolvedValue({ ...base,
+      export: { status: 'failed', stage, error: undefined, navigation: skippedNavigation },
+    });
+    await expect(program.parseAsync(['youtube', 'sync-all', '--vault', 'vault'], { from: 'user' }))
+      .rejects.toMatchObject({ exitCode: 1, code: 'knowledge-sync.account-sync' });
+    expect(output()).toBe('Playlists: discovered=2 succeeded=2 failed=0 unattempted=0\nItems: processed=4 new=3 changed=1 unchanged=0\nMemberships: removed=0\nNavigation: skipped (earlier export failure)\n');
+    expect(errors()).not.toContain('YouTube command failed');
+  });
   it.each([false, true])('fails for collection output while retaining item counters (unexpected=%s)', async (unexpected) => {
     const { commands, program, output, errors } = setupCommands();
     const result = { processed: 2, succeeded: 2, failed: 0, failures: [] };
@@ -62,8 +78,8 @@ describe('account sync CLI', () => {
       membershipsRemoved: 0,
       playlists: { discovered: 1, succeeded: 1, failed: 0, unattempted: 0 },
       items: { processed: 2, new: 2, changed: 0, unchanged: 0 }, failures: [],
-      export: unexpected ? { status: 'failed', stage: 'collections', result, error: undefined } : {
-        status: 'completed', result, collections: { status: 'completed', result: {
+      export: unexpected ? { status: 'failed', stage: 'collections', result, error: undefined, navigation: skippedNavigation } : {
+        status: 'completed', result, navigation: completedNavigation, collections: { status: 'completed', result: {
           processed: 1, succeeded: 0, failed: 1, failures: [{ index: 0,
             collection: { source: 'youtube', sourceId: 'PLone', title: 'Private title' }, error: new Error('fake-secret') }],
         } },
@@ -98,6 +114,7 @@ describe('account sync CLI', () => {
     expect(output()).toContain('Playlists: discovered=2 succeeded=2 failed=0 unattempted=0');
     expect(output()).toContain('Items: processed=4 new=3 changed=1 unchanged=0');
     expect(errors()).toBe('');
+    expect(output()).not.toContain('Navigation:');
   });
 
   it.each([['--auth', 'oauth'], ['--auth', 'api-key'], ['PL123'], ['--db'], ['--vault']])
@@ -114,7 +131,7 @@ describe('account sync CLI', () => {
       playlists: { discovered: 2, succeeded: 1, failed: 1, unattempted: 0 },
       items: { processed: 1, new: 1, changed: 0, unchanged: 0 },
       failures: [{ playlistId: 'PLbad', playlistTitle: 'bad\n\u001b[31m\u202e', error: new Error('fake-secret') }],
-      export: { status: 'failed', stage: 'snapshot', error: { detail: 'fake-secret' } },
+      export: { status: 'failed', stage: 'snapshot', error: { detail: 'fake-secret' }, navigation: skippedNavigation },
     });
     await expect(program.parseAsync(['youtube', 'sync-all', '--vault', 'vault'], { from: 'user' }))
       .rejects.toMatchObject({ exitCode: 1, code: 'knowledge-sync.account-sync' });
@@ -132,7 +149,7 @@ describe('account sync CLI', () => {
       membershipsRemoved: 0,
       playlists: { discovered: 0, succeeded: 0, failed: 0, unattempted: 0 },
       items: { processed: 0, new: 0, changed: 0, unchanged: 0 }, failures: [],
-      export: { status: 'completed', result: { processed: 1, succeeded: 0, failed: 1, failures: [{
+      export: { status: 'completed', navigation: completedNavigation, result: { processed: 1, succeeded: 0, failed: 1, failures: [{
         index: 0, item: { source: 'other', sourceId: 'old', title: 'Old', url: 'https://example.com' }, error: new Error('fake-secret'),
       }] } },
     });
@@ -149,13 +166,52 @@ describe('account sync CLI', () => {
       playlists: { discovered: 3, succeeded: 1, failed: 1, unattempted: 1 },
       items: { processed: 1, new: 1, changed: 0, unchanged: 0 },
       failures: [{ playlistId: 'PLbad', error: undefined }],
-      fatal: { stage: 'playlist', error: undefined }, export: { status: 'skipped' },
+      fatal: { stage: 'playlist', error: undefined }, export: { status: 'skipped', navigation: skippedNavigation },
     });
     await expect(program.parseAsync(['youtube', 'sync-all'], { from: 'user' })).rejects.toMatchObject({ exitCode: 1 });
     expect(output()).toContain('unattempted=1');
     expect(errors()).toContain('Account sync stopped during playlist');
     expect(errors()).toContain('Obsidian export skipped');
+    expect(output()).toContain('Navigation: skipped (earlier export failure)\n');
   });
+});
+
+describe('navigation CLI outcomes', () => {
+  const outcomes: NavigationExportOutcome[] = [
+    { status: 'completed' },
+    { status: 'skipped', reason: 'empty-snapshot' },
+    { status: 'failed', stage: 'render', error: undefined },
+    { status: 'failed', stage: 'write', error: new Error('fake-secret C:\\private\\vault') },
+  ];
+  for (const command of ['sync-all', 'sync-obsidian'] as const) {
+    it.each(outcomes)(`${command} reports navigation $status $stage and preserves existing summaries`, async (navigation) => {
+      const { commands, program, output, errors } = setupCommands();
+      const collections = { status: 'completed' as const, result: { processed: 1, succeeded: 1, failed: 0, failures: [] } };
+      if (command === 'sync-all') {
+        const base = await commands.syncAll({});
+        commands.syncAll.mockResolvedValue({ ...base, export: {
+          status: 'completed', result: { processed: 5, succeeded: 5, failed: 0, failures: [] }, collections, navigation,
+        } });
+      } else {
+        const base = await commands.syncObsidian('PLone', { auth: 'api-key' });
+        commands.syncObsidian.mockResolvedValue({ ...base, navigation });
+      }
+      const running = program.parseAsync(['youtube', command, ...(command === 'sync-obsidian' ? ['PLone'] : []), '--vault', 'vault'], { from: 'user' });
+      if (navigation.status === 'failed') {
+        await expect(running).rejects.toMatchObject({ exitCode: 1,
+          code: command === 'sync-all' ? 'knowledge-sync.account-sync' : 'knowledge-sync.obsidian-export' });
+        expect(output()).toContain('Navigation: succeeded=0 failed=1\n');
+        expect(errors().match(/incomplete;/g)).toHaveLength(1);
+        expect(errors()).toContain(navigation.stage === 'render' ? 'Navigation rendering failed.' : 'Navigation export failed.');
+      } else {
+        await running;
+        expect(errors()).toBe('');
+        expect(output()).toContain(navigation.status === 'completed' ? 'Navigation: succeeded=1 failed=0\n' : 'Navigation: skipped (empty snapshot)\n');
+      }
+      expect(output()).toContain('Export: attempted=5 succeeded=5 failed=0\nCollections: attempted=1 succeeded=1 failed=0\nNavigation:');
+      expect(errors()).not.toMatch(/fake-secret|private|YouTube command failed/);
+    });
+  }
 });
 
 describe('YouTube CLI commands', () => {
@@ -271,6 +327,7 @@ describe('YouTube sync-obsidian CLI', () => {
   it.each([false, true])('fails for collection-only errors with safe diagnostics (unexpected=%s)', async (unexpected) => {
     const { commands, program, output, errors } = setupCommands();
     commands.syncObsidian.mockResolvedValue({
+      navigation: unexpected ? skippedNavigation : completedNavigation,
       sync: { membershipsRemoved: 0, processed: 0, new: 0, changed: 0, unchanged: 0 },
       export: { processed: 0, succeeded: 0, failed: 0, failures: [] },
       collections: unexpected ? { status: 'failed', error: undefined } : { status: 'completed', result: {
@@ -312,7 +369,7 @@ describe('YouTube sync-obsidian CLI', () => {
     await program.parseAsync(['youtube', 'sync-obsidian', ...args], { from: 'user' });
     expect(commands.syncObsidian).toHaveBeenCalledExactlyOnceWith(playlist, options);
     expect(commands.sync).not.toHaveBeenCalled();
-    expect(output()).toBe('Sync: processed=3 new=1 changed=1 unchanged=1\nMemberships: removed=0\nExport: attempted=5 succeeded=5 failed=0\nCollections: attempted=1 succeeded=1 failed=0\n');
+    expect(output()).toBe('Sync: processed=3 new=1 changed=1 unchanged=1\nMemberships: removed=0\nExport: attempted=5 succeeded=5 failed=0\nCollections: attempted=1 succeeded=1 failed=0\nNavigation: succeeded=1 failed=0\n');
     expect(errors()).toBe('');
   });
 
@@ -329,6 +386,7 @@ describe('YouTube sync-obsidian CLI', () => {
     const item = Object.freeze({ source: 'other\n\u001b[31m', sourceId: 'a\"\u009b\u202e', title: 'secret-title', url: 'https://example.com' });
     const failure = Object.assign(new Error('fake-token path'), { code: 'EACCES', cause: new Error('fake-secret') });
     const result = Object.freeze({
+      navigation: completedNavigation,
       collections: { status: 'completed' as const, result: { processed: 1, succeeded: 1, failed: 0, failures: [] } },
       sync: Object.freeze({ membershipsRemoved: 0, processed: 1, new: 1, changed: 0, unchanged: 0 }),
       export: Object.freeze({ processed: 2, succeeded: 1, failed: 1,
@@ -337,7 +395,7 @@ describe('YouTube sync-obsidian CLI', () => {
     commands.syncObsidian.mockResolvedValue(result);
     await expect(program.parseAsync(['youtube', 'sync-obsidian', 'PLone'], { from: 'user' }))
       .rejects.toMatchObject({ exitCode: 1, code: 'knowledge-sync.obsidian-export' });
-    expect(output()).toBe('Sync: processed=1 new=1 changed=0 unchanged=0\nMemberships: removed=0\nExport: attempted=2 succeeded=1 failed=1\nCollections: attempted=1 succeeded=1 failed=0\n');
+    expect(output()).toBe('Sync: processed=1 new=1 changed=0 unchanged=0\nMemberships: removed=0\nExport: attempted=2 succeeded=1 failed=1\nCollections: attempted=1 succeeded=1 failed=0\nNavigation: succeeded=1 failed=0\n');
     expect(errors()).toContain('index 1 (source="other\\n\\u001b[31m", sourceId="a\\"\\u009b\\u202e")');
     expect(errors()).toContain('Permission denied while writing the note (EACCES).');
     expect(errors()).toContain('successful SQLite writes remain committed');
@@ -359,6 +417,7 @@ describe('YouTube sync-obsidian CLI', () => {
   ])('reports safe diagnostics for captured errors: $expected', async ({ error, expected }) => {
     const { program, commands, errors } = setupCommands();
     commands.syncObsidian.mockResolvedValue({
+      navigation: completedNavigation,
       collections: { status: 'completed', result: { processed: 1, succeeded: 1, failed: 0, failures: [] } },
       sync: { membershipsRemoved: 0, processed: 0, new: 0, changed: 0, unchanged: 0 },
       export: { processed: 1, succeeded: 0, failed: 1,

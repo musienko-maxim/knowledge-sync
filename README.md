@@ -30,6 +30,9 @@ Task 016 adds OAuth-only account-wide synchronization through `youtube sync-all`
 with an optional single final Obsidian export. Task 017 adds deterministic collection
 notes linked to existing item notes in both export commands. Task 018 reconciles
 stale memberships after each complete successful playlist sync. Import recording remains deferred.
+Task 020 adds a readable root `Knowledge Sync.md` navigation page to both export
+commands, with deterministic links and protection for user-owned destination files.
+Automated validation is complete; real-world Obsidian acceptance is a separate step.
 
 ## Development
 
@@ -234,9 +237,11 @@ Sync: processed=12 new=2 changed=1 unchanged=9
 Memberships: removed=2
 Export: attempted=15 succeeded=14 failed=1
 Collections: attempted=3 succeeded=3 failed=0
+Navigation: succeeded=1 failed=0
 ```
 
-Full success exits 0. Individual export failures still print separate item and collection counts,
+Full success exits 0. Navigation failures print a safe diagnostic and exit 1 while
+retaining completed item and collection results. Individual export failures still print separate item and collection counts,
 report each failed snapshot index (zero-based), quoted identity, and safe reason
 to stderr, and exit 1. Fatal configuration/auth/collection/storage errors also
 exit 1, using existing credential-safe diagnostics. Arbitrary error messages,
@@ -409,6 +414,41 @@ multi-file write. Existing generated notes, including local edits, are overwritt
 Reconciled memberships naturally disappear from collection links on the next export;
 orphan item notes remain because their items remain persisted. An export failure
 does not roll back reconciliation, and a later successful export repairs the projection.
+
+## Navigation page
+
+Both `youtube sync-obsidian` and `youtube sync-all --vault <path>` generate
+`Knowledge Sync.md` at the vault root after the item and collection batches.
+Open it in Obsidian for readable **Collections** and **All items** links. Every
+persisted entity appears once, including shared items and items whose memberships
+were removed. Canonical filenames and existing item/collection Markdown stay the
+same; encoded filenames are still visible in the file explorer.
+
+Display titles use NFC, control-to-space conversion, collapsed whitespace, and
+empty-title fallbacks. Each section sorts by normalized title, then source and
+ID, using locale-independent comparison. Equal normalized titles receive an
+identity suffix. Links encode literal filenames separately from display text.
+Equivalent snapshots produce identical navigation bytes, without timestamps.
+
+The page is owned by the generator only when its first line is exactly
+`<!-- knowledge-sync:generated-navigation:v1 -->` (an optional UTF-8 BOM and
+LF/CRLF are recognized). A user-owned file, directory, or symlink at that path
+is preserved and reported as a failed navigation export. Move a conflicting user
+note to another filename before retrying. Edits to a recognized generated page
+are replaced on the next run.
+
+The dedicated writer prepares and closes a complete sibling temporary file before
+renaming it over the destination. Preparation/replacement failures preserve the
+previous page. Cleanup removes only temporary files created by that invocation;
+an abrupt stop may leave an orphan that future runs preserve. Use one writer per
+vault with no concurrent external edits: ownership checks do not eliminate
+check/rename races or promise power-loss durability on every filesystem.
+
+Ordinary note failures still allow navigation generation, so some links can remain
+unresolved until a successful rerun. Unexpected batch exceptions skip navigation.
+A completely empty snapshot also skips it and leaves any previous page untouched.
+SQLite progress and successful earlier writes remain after navigation failure.
+Non-export commands do not create or report navigation.
 
 ## YouTube account setup
 

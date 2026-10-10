@@ -41,6 +41,7 @@ function setup() {
     getImported: vi.fn(), recordImport: vi.fn(), close: vi.fn(),
   };
   const result: SyncCollectionToObsidianResult = {
+    navigation: { status: 'completed' },
     collections: { status: 'completed', result: { processed: 1, succeeded: 1, failed: 0, failures: [] } },
     sync: { membershipsRemoved: 2, processed: 7, new: 2, changed: 1, unchanged: 4 },
     export: { processed: 9, succeeded: 9, failed: 0, failures: [] },
@@ -209,6 +210,7 @@ describe('YouTube to Obsidian composition', () => {
   it('returns partial failures unchanged and closes storage without retrying', async () => {
     const { orchestrate, storage } = setup();
     const result: SyncCollectionToObsidianResult = {
+      navigation: { status: 'completed' },
       collections: { status: 'completed', result: { processed: 1, succeeded: 1, failed: 0, failures: [] } },
       sync: { processed: 1, new: 1, changed: 0, unchanged: 0, membershipsRemoved: 0 },
       export: {

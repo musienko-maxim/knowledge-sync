@@ -1,5 +1,5 @@
 import type { Command } from 'commander';
-import { mkdir, mkdtemp, readFile, readdir, rm, rmdir } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -273,6 +273,7 @@ it('syncs owned playlists including empty ones, without exporting merely because
   expect(command.stdout()).toContain('Playlists: discovered=3 succeeded=3 failed=0 unattempted=0');
   expect(command.stdout()).toContain('Items: processed=4 new=3 changed=1 unchanged=0');
   expect(command.stderr()).toBe('');
+  expect(command.stdout()).not.toContain('Navigation:');
   const persisted = await snapshot();
   expect(persisted.items.map(({ sourceId }) => sourceId)).toEqual(['X', 'Y', 'Z']);
   expect(persisted.collections).toHaveLength(3);
@@ -301,6 +302,11 @@ it('reads and exports the full persisted snapshot exactly once after all playlis
   const command = cli();
   await command.run(['--vault', vault]);
   expect(command.stdout()).toContain('Export: attempted=4 succeeded=4 failed=0');
+  expect(command.stdout()).toContain('Navigation: succeeded=1 failed=0');
+  const navigation = await readFile(join(vault, 'Knowledge Sync.md'), 'utf8');
+  expect(navigation).toContain('<!-- knowledge-sync:generated-navigation:v1 -->\n');
+  expect(navigation).toContain('Retained item');
+  expect(navigation.match(/\[Video X\]/g)).toHaveLength(1);
   expect(exportNotes).toHaveBeenCalledTimes(1);
   expect(exportCollections).toHaveBeenCalledTimes(1);
   expect(stores[0]!.knowledgeItems.listAll).toHaveBeenCalledTimes(1);
@@ -318,6 +324,48 @@ it('reads and exports the full persisted snapshot exactly once after all playlis
   exportNotes.mockRestore();
   await cli().run(['--vault', vault]);
   expect(await Promise.all(paths.map((path) => readFile(path, 'utf8')))).toEqual(notes);
+  expect(await readFile(join(vault, 'Knowledge Sync.md'), 'utf8')).toBe(navigation);
+});
+
+it('refuses an unowned navigation page while retaining data and successful notes, then retries successfully', async () => {
+  transport([{ id: 'PLA', title: 'A', videos: ['X'] }]);
+  const target = join(vault, 'Knowledge Sync.md');
+  await writeFile(target, 'Personal dashboard\nprivate content\n');
+  const first = cli();
+  await expect(first.run(['--vault', vault])).rejects.toMatchObject({ exitCode: 1, code: 'knowledge-sync.account-sync' });
+  expect(first.stdout()).toBe('Playlists: discovered=1 succeeded=1 failed=0 unattempted=0\nItems: processed=1 new=1 changed=0 unchanged=0\nMemberships: removed=0\nExport: attempted=1 succeeded=1 failed=0\nCollections: attempted=1 succeeded=1 failed=0\nNavigation: succeeded=0 failed=1\n');
+  expect(first.stderr()).toContain('Navigation export refused: Knowledge Sync.md is not a recognized generated page.\n');
+  expect(first.stderr()).not.toMatch(/private content|fake-secret|YouTube command failed/);
+  expect(first.stderr()).not.toContain(vault);
+  expect(await readFile(target, 'utf8')).toBe('Personal dashboard\nprivate content\n');
+  const before = await snapshot();
+  expect(before.items).toHaveLength(1);
+  expect(before.memberships).toHaveLength(1);
+  const notePaths = [buildObsidianRelativePath(before.items[0]!), buildObsidianCollectionRelativePath(before.collections[0]!)];
+  const notes = await Promise.all(notePaths.map((path) => readFile(join(vault, path), 'utf8')));
+  expect(stores[0]!.close).toHaveBeenCalledTimes(1);
+  await expect(stores[0]!.knowledgeItems.listAll()).rejects.toThrow();
+  await rename(target, join(vault, 'Personal dashboard.md'));
+  const retry = cli();
+  await retry.run(['--vault', vault]);
+  expect(retry.stdout()).toContain('Items: processed=1 new=0 changed=0 unchanged=1');
+  expect(retry.stdout()).toContain('Navigation: succeeded=1 failed=0\n');
+  expect(retry.stderr()).toBe('');
+  expect(await snapshot()).toEqual(before);
+  expect(await Promise.all(notePaths.map((path) => readFile(join(vault, path), 'utf8')))).toEqual(notes);
+  expect(await readFile(target, 'utf8')).toContain('<!-- knowledge-sync:generated-navigation:v1 -->\n');
+  expect(stores[1]!.close).toHaveBeenCalledTimes(1);
+  await expect(stores[1]!.knowledgeItems.listAll()).rejects.toThrow();
+});
+
+it('skips navigation successfully for an entirely empty persisted snapshot', async () => {
+  transport([]);
+  const command = cli();
+  await command.run(['--vault', vault]);
+  expect(command.stdout()).toBe('Playlists: discovered=0 succeeded=0 failed=0 unattempted=0\nItems: processed=0 new=0 changed=0 unchanged=0\nMemberships: removed=0\nExport: attempted=0 succeeded=0 failed=0\nCollections: attempted=0 succeeded=0 failed=0\nNavigation: skipped (empty snapshot)\n');
+  expect(command.stderr()).toBe('');
+  expect(await readdir(vault)).toEqual([]);
+  expect(stores[0]!.close).toHaveBeenCalledTimes(1);
 });
 
 it('exports retained data after discovering zero playlists', async () => {
