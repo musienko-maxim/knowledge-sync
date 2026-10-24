@@ -4,6 +4,7 @@ import { buildObsidianCollectionRelativePath } from './collection-path.js';
 import type { CollectionProjection } from './collection-projection.js';
 import { encodeMarkdownDestination, escapeMarkdownInline } from './markdown-link.js';
 import { buildObsidianRelativePath } from './note-path.js';
+import { escapeFacebookText, facebookOwnershipPrefix } from './facebook-safety.js';
 
 /** Pure deterministic rendering of a collection projection in its supplied item order. */
 export function renderCollectionMarkdown(projection: CollectionProjection): string {
@@ -13,7 +14,11 @@ export function renderCollectionMarkdown(projection: CollectionProjection): stri
   const directory = posix.dirname(buildObsidianCollectionRelativePath(collection));
   const links = items.map((item) => {
     const relativePath = posix.relative(directory, buildObsidianRelativePath(item));
-    return `- [${escapeMarkdownInline(item.title)}](${encodeMarkdownDestination(relativePath)})`;
+    const label = item.source === 'facebook' ? escapeFacebookText(item.title) : escapeMarkdownInline(item.title);
+    return `- [${label}](${encodeMarkdownDestination(relativePath)})`;
   });
-  return `---\n${metadata}\n---\n\n# ${escapeMarkdownInline(collection.title || collection.sourceId)}\n\n${links.length ? links.join('\n') : '_No items._'}\n`;
+  const facebook = collection.source === 'facebook';
+  const prefix = facebook ? facebookOwnershipPrefix('collection', collection) : '---\n';
+  const title = (facebook ? escapeFacebookText : escapeMarkdownInline)(collection.title || collection.sourceId);
+  return `${prefix}${metadata}\n---\n\n# ${title}\n\n${links.length ? links.join('\n') : '_No items._'}\n`;
 }

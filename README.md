@@ -34,6 +34,71 @@ Task 020 adds a readable root `Knowledge Sync.md` navigation page to both export
 commands, with deterministic links and protection for user-owned destination files.
 Automated validation is complete; real-world Obsidian acceptance is a separate step.
 
+Task 021 adds local Facebook Saved import from an extracted `collections.json`.
+It shares the existing SQLite repositories and optional full-snapshot export.
+Real-vault acceptance is a separate step.
+
+## Facebook Saved import
+
+```powershell
+node dist/cli/index.js facebook import --file "D:\imports\collections.json" --db "D:\data\knowledge-sync.sqlite"
+node dist/cli/index.js facebook import --file "D:\imports\collections.json" --db "D:\data\knowledge-sync.sqlite" --vault "D:\obsidian"
+```
+
+Use the extracted Facebook `collections.json`, with the verified Ukrainian
+labels described in [the source-format report](docs/task-021-source-format.md).
+ZIP archives and `your_saved_items.json` are unsupported command inputs. The
+importer makes no network requests. Correct Unicode is preserved; a narrow,
+strict repair handles the verified encoding defect in labels and metadata.
+URLs and collection identifiers are never repaired or canonicalized.
+
+Item identity is `facebook` plus `url-v1-` and the full lowercase SHA-256 of the
+exact validated URL's UTF-8 bytes. Collection identity uses its original decimal
+FBID string. Different URLs remain different items even when they lead to the
+same content. Repeated records and membership edges are deduplicated separately.
+Missing URLs are counted as skipped entries; malformed recognized input fails
+before opening the database. File limits are 16 MiB, 5,000 collections, 100,000
+Saved occurrences, nesting depth 32, 65,536 UTF-16 units per string, and 128
+decimal digits per collection ID.
+
+Complementary metadata is merged field by field. Conflicting nonempty optional
+values are omitted for new items; a conflicting title uses a deterministic
+`Facebook Saved — <Type> — <12 hash characters>` fallback. Existing meaningful
+values survive conflicts and sparse updates. An exact recomputed fallback can
+be promoted to an unambiguous explicit title. Save times are not publication
+dates. Collection titles update from the supplied archive, so an older archive
+can revert a collection's name. Conflicting names for one ID within a file fail
+validation.
+
+Persistence is sequential: collections, items, then unique memberships. Membership
+writes are additive; missing entries never remove stored relationships or files.
+A storage failure stops the run, retains completed writes and counters, and
+suppresses export. Retrying converges without duplicating records. Item import
+does not record synchronization/import-state metadata.
+
+Only explicit `--vault` enables export; `OBSIDIAN_VAULT_PATH` alone does not.
+Database path precedence remains `--db`, `DATABASE_PATH`, then
+`./data/knowledge-sync.sqlite`, with the existing vault-exclusion checks.
+Export uses every persisted source, collection, and membership, including retained
+items, to generate notes, collection pages, and `Knowledge Sync.md`.
+
+Facebook notes and collection pages carry an ownership marker identifying the
+version, entity kind, source, and complete identity. Export refuses unowned
+collisions and symlink/junction paths, checks intermediate directories, and uses
+exclusive temporary files followed by replacement. Failed replacement preserves
+existing bytes. Facebook text is rendered literally. These protections also
+apply when a YouTube command exports stored Facebook records; existing YouTube
+filenames and Markdown remain compatible. Generated Facebook pages are replaceable
+output, so keep personal edits in separate notes.
+
+CLI summaries distinguish input occurrences, URL-bearing entries, duplicate items,
+repeated memberships, skips, persistence results, and export results. Warning and
+failure diagnostics omit Facebook URLs, FBIDs, and private metadata. Handled skips
+and metadata warnings exit successfully; invalid input, storage failures, and
+requested export failures exit 1. Concurrent external edits and universal
+power-loss durability are not guaranteed; abruptly interrupted writes can leave
+temporary files.
+
 ## Development
 
 Requires Node.js 24 or newer and npm. The SQLite driver uses a native module;
@@ -601,7 +666,7 @@ are implemented):
 YouTube Playlist → KnowledgeItem → SQLite → Markdown → Obsidian
 ```
 
-Facebook integration, AI processing, scheduling, background execution, Git
+Live Facebook collection, AI processing, scheduling, background execution, Git
 automation, web UI, Docker, and cloud infrastructure are out of scope.
 Watch Later, arbitrary saved/followed-playlist discovery, and Likes synchronization
 are unsupported. The collector handles one playlist at a time; account collection
@@ -610,7 +675,8 @@ persists many-to-many membership. The singular `collection` field retains its
 compatibility behavior described above. `sync-all` now persists every owned
 playlist sequentially and optionally exports once after the loop.
 
-Work stops at Task 018 per-collection membership reconciliation. `youtube sync` collects,
+The current scope includes Task 020 navigation and Task 021 local Facebook import.
+`youtube sync` collects,
 classifies, and persists items and relationships in SQLite, then removes stale
 memberships after a complete successful collection sync;
 `youtube sync-obsidian` additionally exports the persisted

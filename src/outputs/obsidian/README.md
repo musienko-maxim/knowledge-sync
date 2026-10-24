@@ -11,7 +11,7 @@ are rejected before filesystem changes. Relative vault paths resolve against cwd
 Windows recognizes both separators; POSIX uses its native filename semantics.
 Otherwise valid path values are not trimmed or sanitized.
 
-Containment is lexical only; symlinks are followed normally. Writes are not atomic;
+For this legacy writer, containment is lexical only; symlinks are followed normally. Writes are not atomic;
 failed writes can leave partial content. The writer does not discover vaults, read
 configuration, render Markdown, select filenames, or integrate with sync/import state.
 
@@ -27,7 +27,7 @@ the original inputs and generated outputs unchanged. Path or rendering failures
 skip later steps; all failures reject with their original value. Success returns
 no result and occurs only after writing completes. The supplied item is not mutated.
 
-The exporter inherits the writer's containment, overwrite, and failure semantics;
+For sources other than Facebook, the exporter inherits the legacy writer's containment, overwrite, and failure semantics;
 an encoded path can still exceed native filesystem length limits. It does not
 load configuration, access SQLite, record imports, select items, or integrate with
 sync or the CLI. `Output.write(item)` remains unchanged. No Obsidian API or Git
@@ -149,3 +149,32 @@ Both affected application operations retain these outcomes; both export CLIs
 print a separate navigation summary and exit nonzero on navigation failure.
 An account export without `--vault` retains `not-requested` without navigation.
 The generic item-only APIs remain unchanged.
+
+Task 021 routes Facebook items and collections through the shared
+[owned writer](write-owned-note.ts), including when a YouTube command exports a
+mixed-source SQLite snapshot. Paths remain unchanged. The first YAML field,
+`knowledge_sync`, contains a quoted JSON ownership record with version 1, entity
+kind (`item` or `collection`), source, and complete source ID. Existing files must
+match that exact generated prefix before replacement; unmarked files, wrong
+versions, other identities and other entity kinds are preserved.
+
+The writer checks every existing directory component from the filesystem root
+through the vault and destination parent with `lstat`, rejecting symlinks,
+Windows junctions, and non-directories. Missing parents below an existing vault
+are created individually and checked again. The target must be absent or a
+regular owned file. An exclusively created sibling temporary file is written and
+closed before directories and ownership are rechecked, then renamed into place.
+No destructive replacement fallback exists. Preparation/rename failures preserve
+old canonical bytes; cleanup touches only this invocation's temporary file.
+Orphans from interrupted runs or failed cleanup are left alone. As with
+navigation, one writer and no concurrent external filesystem mutation are
+assumed; rechecks are not locks and do not promise power-loss durability.
+
+[Facebook rendering](facebook-safety.ts) encodes ASCII punctuation as character
+references in body text, collection headings, and link labels, including shared
+navigation labels. This keeps HTML, Markdown links, Obsidian embeds, math,
+highlights, and block references literal. Frontmatter retains quoted values;
+source URLs are not fetched or rewritten. Mixed snapshots also validate vault
+ancestors before writing navigation. Existing YouTube bytes and filenames are
+unchanged. Shared CLI failure formatting reports Facebook indexes and fixed
+reasons without private identities or source content.

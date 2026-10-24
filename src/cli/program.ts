@@ -10,11 +10,12 @@ import type { AccountSyncResult } from '../application/sync-account.js';
 import { formatAccountSyncResult } from './account-sync-output.js';
 import { formatCollectionExportOutcome } from './collection-export-output.js';
 import { formatNavigationExportOutcome } from './navigation-export-output.js';
+import { addFacebookCommands } from './facebook.js';
 
 export function createProgram(commands: YouTubeCommands = youtubeCommands): Command {
   const program = new Command()
     .name('knowledge-sync')
-    .description('Local-first knowledge collection for Obsidian; manual YouTube playlist sync to SQLite.')
+    .description('Local-first knowledge collection for Obsidian; manual YouTube sync and Facebook Saved import.')
     .action(function (this: Command) { this.outputHelp(); });
   const youtube = program.command('youtube').description('YouTube account access, owned playlists, and playlist sync');
   const auth = youtube.command('auth').description('Manage local Google OAuth authorization');
@@ -93,5 +94,6 @@ export function createProgram(commands: YouTubeCommands = youtubeCommands): Comm
           { exitCode: 1, code: 'knowledge-sync.account-sync' });
       }
     });
+  addFacebookCommands(program);
   return program;
 }

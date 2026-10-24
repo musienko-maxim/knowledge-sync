@@ -1,0 +1,27 @@
+[
+  {
+    "timestamp": 1700000000,
+    "media": [],
+    "label_values": [
+      { "label": "Назва", "value": "Навчання — приклад" },
+      { "title": "Учасники", "dict": [{ "title": "", "dict": [{ "label": "Ім’я", "value": "Ignored participant" }] }] },
+      { "title": "Збереження", "dict": [
+        { "title": "", "dict": [
+          { "label": "URL-адреса", "value": "https://www.facebook.com/example/posts/123?ref=saved", "href": "https://www.facebook.com/example/posts/123?ref=saved" },
+          { "label": "Назва", "value": "Корисний приклад 🙂" },
+          { "label": "Опис", "value": "A sanitized description." },
+          { "label": "Ім’я", "value": "Ignored generic name" },
+          { "title": "Група", "dict": [{ "label": "Ім’я", "value": "Ignored group" }] },
+          { "title": "Автор", "dict": [{ "label": "Ім’я", "value": "Example author" }] },
+          { "label": "Переглянуто", "value": "2024-01-01" }
+        ] },
+        { "title": "", "dict": [{ "label": "Назва", "value": "Unsupported URL-less entry" }] }
+      ] }
+    ],
+    "fbid": "900719925474099312345678"
+  },
+  {
+    "label_values": [{ "label": "Назва", "value": "Empty collection" }, { "title": "Збереження", "dict": [] }],
+    "fbid": "002"
+  }
+]
