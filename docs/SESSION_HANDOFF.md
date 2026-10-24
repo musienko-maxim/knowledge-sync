@@ -1,8 +1,112 @@
 # Project Session Handoff
 
-Updated: 2026-10-10
+Updated: 2026-10-12
 
-Latest implementation: the user confirmed Task 020 is finished on 2026-10-10
+## Task 021 implementation recovery — 2026-10-11
+
+The user asked to resume after a token-limit interruption. Entry-state inspection
+found the approved [implementation assignment](../prompts/task-021-implementation.md)
+and the preserved [review prompt](../prompts/task-021.md), both untracked, with
+`prompts/task-022.md` already deleted. The implementation assignment explicitly
+records approval to proceed. No source changes had started. This task resumes
+Facebook Saved JSON import; the review-only prompt is retained as historical
+context. The deletion is preserved. Do not commit or push automatically.
+
+**IMPLEMENTED — AWAITING REAL E2E ACCEPTANCE.** Implementation and verification
+finished after the second usage-limit resumption on 2026-10-12. The command is
+`facebook import --file <collections.json> [--db <path>] [--vault <path>]`.
+
+The parser validates the whole bounded input before SQLite is opened. Exact URL
+SHA-256 identities, string FBIDs, strict localized format/Unicode handling,
+deterministic duplicate merging, safe conflict codes, and exact fallback promotion
+are implemented. Collections, items, and unique memberships persist sequentially;
+memberships are additive. Sparse updates preserve legacy metadata. Failures stop
+later writes, retain completed counters, suppress export, and close storage.
+There is no schema migration, dependency addition, or import-state recording.
+
+Explicit `--vault` exports the full multi-source snapshot with existing paths and
+navigation. Shared exporters protect Facebook item/collection ownership, reject
+symlinks/junctions and unsafe intermediate directories, use exclusively created
+sibling temporary files and failure-safe rename, and render untrusted text
+literally. Mixed-source navigation validates vault ancestors. Shared diagnostics
+redact Facebook identities/content even when invoked through YouTube commands.
+Existing YouTube Markdown bytes and filenames are preserved.
+
+Fresh verification:
+
+- `npm.cmd install`: passed; no dependency changes. The pre-existing one-high
+  audit finding remains outside this task's scope.
+- Focused export verification: 155 tests across 10 files; initial parser
+  verification: 48 tests. Integrated CLI regressions include Facebook import →
+  YouTube export → Facebook reimport with item and collection collisions and
+  diagnostic redaction.
+- Final `npm.cmd test`: **1,188 passed, 4 skipped, 49 files passed**. Skips remain
+  the existing POSIX-permission case and three navigation real-symlink cases on
+  Windows. New real Windows junction checks pass.
+- Final `npm.cmd run typecheck` and `npm.cmd run build`: passed.
+- Built CLI startup, top-level help, Facebook import help, and YouTube
+  sync-obsidian help: passed.
+- `npm.cmd exec --offline --package=. -- knowledge-sync --help`: passed.
+- `git diff --check`, whitespace checks for new source/tests/docs, and 35 local
+  references in the current task documentation: passed.
+- Independent read-only implementation/security review found one duplicate
+  collection blank-name validation order issue. It is fixed by requiring a name
+  in each record, with both-order regression coverage. No findings remain.
+- An outdated help-text assertion failed in the initial full run; updated for
+  the new command description before the final passing run.
+
+Temporary E2E against the verified archive passed: **270 items, 14 collections,
+271 memberships, 285 Markdown files**. A second import after reopening SQLite
+reported all items/collections/memberships unchanged and identical generated
+Markdown bytes, with no metadata warnings. No import-state records were created.
+The source was read only, and private extracted JSON, SQLite, and output files
+were held in an isolated OS temporary directory and removed after verification.
+
+Read-only parsing of the original archive freshly confirmed 14 collections,
+349 occurrences, 345 URL-bearing occurrences, 270 distinct items, 271 unique
+memberships, 75 duplicate items, 74 repeated memberships, four URL-less skips,
+and one empty collection. No private records were copied into the repository.
+Only temporary SQLite/vault E2E is authorized; do not access the real database
+or `D:\obsidian`.
+
+Files added by implementation:
+
+- `src/collectors/facebook/import.ts`
+- `src/application/import-facebook.ts`
+- `src/cli/facebook.ts`, `facebook-import.ts`, `facebook-import-output.ts`
+- `src/outputs/obsidian/facebook-safety.ts`, `write-owned-note.ts`
+- `tests/facebook-parser.test.ts`, `facebook-import.test.ts`,
+  `facebook-import.integration.test.ts`, `facebook-cli.integration.test.ts`,
+  `facebook-export.test.ts`, and `tests/fixtures/facebook/collections.json`
+- [Source-format evidence](task-021-source-format.md)
+
+Updated existing files: `src/cli/program.ts`, `src/cli/obsidian-export-failure.ts`,
+`src/outputs/markdown.ts`, `src/outputs/obsidian/{collection-markdown,export-note,export-collection,export-projection,navigation-markdown}.ts`,
+`tests/cli.test.ts`, `README.md`, `src/outputs/obsidian/README.md`, and this handoff.
+The approved implementation and historical review prompts were already untracked
+at task entry; the deleted Task 022 prompt was not restored.
+
+Directory layout remains `src/{application,auth,cli,collectors,core/models,outputs/obsidian,storage/sqlite}`,
+`tests`, `data`, `docs`, and `prompts`, with the new `collectors/facebook` and
+sanitized `tests/fixtures/facebook` directories. No architecture deviations:
+Task 021 explicitly authorizes local Facebook import beyond the earlier MVP scope.
+Raw Facebook structures and normalization remain inside the collector directory.
+
+Known limits: this recognizes the verified localized collections format only,
+not arbitrary Facebook exports; the encoding repair is deliberately narrow.
+Exact URL spellings define identity; no canonicalization or remote content fetch
+is attempted. Older archives can revert collection names. Missing entries do not
+remove data. Generated pages are replaceable and collisions need user resolution.
+One writer and no concurrent external filesystem edits are assumed; rechecks are
+not locks and no universal power-loss durability is promised. Abrupt termination
+may leave orphan temporary files. Ownership markers are provenance conventions,
+not cryptographic authentication. No commits or pushes were made.
+
+Remaining acceptance: a separately authorized import using the user's chosen
+real database/vault, followed by Obsidian navigation and link inspection. Do not
+run it automatically or proceed to another task.
+
+Previous implementation: the user confirmed Task 020 is finished on 2026-10-10
 and requested conflict resolution and merge of PR #6. Fresh automated checks
 pass. See the PR #6 checkpoint below; earlier no-commit/no-push statements
 describe the implementation session before this publication authorization.

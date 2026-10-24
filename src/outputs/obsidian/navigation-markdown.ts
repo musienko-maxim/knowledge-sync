@@ -2,6 +2,7 @@ import { buildObsidianCollectionRelativePath } from './collection-path.js';
 import type { ObsidianProjectionSnapshot } from './collection-projection.js';
 import { encodeMarkdownDestination, escapeMarkdownInline } from './markdown-link.js';
 import { buildObsidianRelativePath } from './note-path.js';
+import { escapeFacebookText } from './facebook-safety.js';
 
 export const NAVIGATION_MARKER = '<!-- knowledge-sync:generated-navigation:v1 -->';
 
@@ -46,7 +47,8 @@ function renderSection<T extends NavigationEntry>(
     const label = titles.get(title)! > 1
       ? `${title} [source=${identityLabel(entry.source)}, sourceId=${identityLabel(entry.sourceId)}]`
       : title;
-    return `- [${escapeMarkdownInline(label)}](${encodeMarkdownDestination(buildPath(entry))})`;
+    const safeLabel = entry.source === 'facebook' ? escapeFacebookText(label) : escapeMarkdownInline(label);
+    return `- [${safeLabel}](${encodeMarkdownDestination(buildPath(entry))})`;
   });
   return links.length ? links.join('\n') : empty;
 }

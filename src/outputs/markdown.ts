@@ -1,7 +1,8 @@
 import type { KnowledgeItem } from '../core/models/knowledge-item.js';
 import { quoteYamlString } from './yaml-string.js';
+import { escapeFacebookText, facebookOwnershipPrefix } from './obsidian/facebook-safety.js';
 
-/** Pure rendering; supplied title/description Markdown and newlines stay verbatim. */
+/** Pure rendering; Facebook text is literal, other sources retain legacy Markdown. */
 export function renderKnowledgeItemMarkdown(item: KnowledgeItem): string {
   const fields: Array<[string, string | undefined]> = [
     ['source', item.source],
@@ -16,9 +17,13 @@ export function renderKnowledgeItemMarkdown(item: KnowledgeItem): string {
     .filter(([, value]) => value !== undefined)
     .map(([key, value]) => `${key}: ${quoteYamlString(value!)}`)
     .join('\n');
-  const body = item.description === undefined
-    ? `# ${item.title}\n`
-    : `# ${item.title}\n\n${item.description}`;
-  const document = `---\n${metadata}\n---\n\n${body}`;
+  const facebook = item.source === 'facebook';
+  const title = facebook ? escapeFacebookText(item.title) : item.title;
+  const description = facebook && item.description !== undefined ? escapeFacebookText(item.description, true) : item.description;
+  const body = description === undefined
+    ? `# ${title}\n`
+    : `# ${title}\n\n${description}`;
+  const prefix = facebook ? facebookOwnershipPrefix('item', item) : '---\n';
+  const document = `${prefix}${metadata}\n---\n\n${body}`;
   return document.endsWith('\n') ? document : `${document}\n`;
 }

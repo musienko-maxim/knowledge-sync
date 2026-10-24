@@ -14,7 +14,8 @@ it('prints help without requiring configuration or opening storage', () => {
   const program = createProgram().configureOutput({ writeOut: (text) => { output += text; } }).exitOverride();
   expect(() => program.parse(['--help'], { from: 'user' })).toThrow(expect.objectContaining({ exitCode: 0 }));
   expect(output).toContain('Usage: knowledge-sync');
-  expect(output).toMatch(/manual YouTube playlist sync to\s+SQLite/);
+  expect(output).toMatch(/manual YouTube sync and Facebook\s+Saved import/);
+  expect(output).toContain('facebook');
 });
 
 it('starts with no arguments and rejects unimplemented commands', () => {

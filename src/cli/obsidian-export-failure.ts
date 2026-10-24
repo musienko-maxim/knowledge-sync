@@ -1,8 +1,17 @@
 import type { ObsidianExportFailure } from '../outputs/obsidian/export-notes.js';
 import type { ObsidianCollectionBatchExportResult } from '../outputs/obsidian/export-collections.js';
+import { OwnedNoteWriteError } from '../outputs/obsidian/write-owned-note.js';
 
 // Public diagnostics are fixed text; raw messages, paths, causes, and objects may contain secrets.
 function reason(error: unknown): string {
+  if (error instanceof OwnedNoteWriteError) {
+    switch (error.reason) {
+      case 'unowned-target': return 'Destination ownership does not match (unowned-target).';
+      case 'unsafe-path': return 'Destination contains an unsafe path component (unsafe-path).';
+      case 'target-changed': return 'Destination changed during export (target-changed).';
+      case 'invalid-content': return 'Generated note ownership is invalid (invalid-content).';
+    }
+  }
   const code = error !== null && typeof error === 'object' && 'code' in error ? error.code : undefined;
   switch (code) {
     case 'ENOENT': return 'Vault or destination parent does not exist (ENOENT).';
@@ -40,9 +49,15 @@ export function quoteDiagnosticValue(value: string): string {
 
 /** One line per failed snapshot entry, preserving the application's zero-based index. */
 export function formatObsidianExportFailure(failure: ObsidianExportFailure): string {
+  if (failure.item.source === 'facebook') {
+    return `Export failed at index ${failure.index} (source="facebook"): ${reason(failure.error)}`;
+  }
   return `Export failed at index ${failure.index} (source=${quoteDiagnosticValue(failure.item.source)}, sourceId=${quoteDiagnosticValue(failure.item.sourceId)}): ${reason(failure.error)}`;
 }
 
 export function formatObsidianCollectionExportFailure(failure: ObsidianCollectionBatchExportResult['failures'][number]): string {
+  if (failure.collection.source === 'facebook') {
+    return `Collection export failed at index ${failure.index} (source="facebook"): ${reason(failure.error)}`;
+  }
   return `Collection export failed at index ${failure.index} (source=${quoteDiagnosticValue(failure.collection.source)}, sourceId=${quoteDiagnosticValue(failure.collection.sourceId)}): ${reason(failure.error)}`;
 }

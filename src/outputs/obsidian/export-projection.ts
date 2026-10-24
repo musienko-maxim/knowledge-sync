@@ -3,6 +3,7 @@ import { exportObsidianCollections, type ObsidianCollectionBatchExportResult } f
 import { exportObsidianNotes, type ObsidianBatchExportResult } from './export-notes.js';
 import { renderNavigationMarkdown } from './navigation-markdown.js';
 import { writeNavigationNote } from './write-navigation.js';
+import { validateOwnedVaultPath } from './write-owned-note.js';
 
 export type CollectionExportOutcome =
   | { status: 'completed'; result: ObsidianCollectionBatchExportResult }
@@ -45,6 +46,10 @@ export async function exportObsidianProjection(
     return { items, collections, navigation: { status: 'failed', stage: 'render', error } };
   }
   try {
+    if (snapshot.items.some((item) => item.source === 'facebook')
+      || snapshot.collections.some((collection) => collection.source === 'facebook')) {
+      await validateOwnedVaultPath(vaultPath);
+    }
     await writeNavigationNote(vaultPath, markdown);
   } catch (error) {
     return { items, collections, navigation: { status: 'failed', stage: 'write', error } };
