@@ -2,7 +2,18 @@ import { describe, expect, it } from 'vitest';
 import type { KnowledgeCollection } from '../src/core/models/knowledge-collection.js';
 import type { KnowledgeItem } from '../src/core/models/knowledge-item.js';
 import type { ObsidianProjectionSnapshot } from '../src/outputs/obsidian/collection-projection.js';
-import { NAVIGATION_MARKER, renderNavigationMarkdown } from '../src/outputs/obsidian/navigation-markdown.js';
+import { NAVIGATION_MARKER, renderNavigationMarkdown as renderWithDestinations } from '../src/outputs/obsidian/navigation-markdown.js';
+import { buildObsidianRelativePath, encodeObsidianPathComponent } from '../src/outputs/obsidian/note-path.js';
+import { encodeMarkdownDestination } from '../src/outputs/obsidian/markdown-link.js';
+
+// Synthetic planned paths deliberately differ from production readable paths.
+// These fixtures isolate display escaping/order and prove the renderer uses the plan.
+function renderNavigationMarkdown(snapshot: ObsidianProjectionSnapshot): string {
+  return renderWithDestinations(snapshot, {
+    itemPath: (entry) => `${encodeObsidianPathComponent(entry.source, 'source')}/${encodeObsidianPathComponent(entry.sourceId, 'sourceId')}.md`,
+    collectionPath: (entry) => `${encodeObsidianPathComponent(entry.source, 'source')}/collections/${encodeObsidianPathComponent(entry.sourceId, 'sourceId')}.md`,
+  });
+}
 
 const item: KnowledgeItem = { source: 'youtube', sourceId: 'X', title: 'Video X', url: 'https://example.com/X' };
 const collection: KnowledgeCollection = { source: 'youtube', sourceId: 'PL1', title: 'Learning' };
@@ -156,7 +167,7 @@ describe('navigation Markdown', () => {
   it.each([
     ['%', '%2525'], ['é', '%25C3%25A9'], ['e\u0301', 'e%25CC%2581'],
     ['X', '%2558'], ['x', 'x'], ['con', '%2563on'], ['CON', '%2543%254F%254E'],
-  ])('keeps literal canonical identity encoding for %s, regardless of changed title', (sourceId, destination) => {
+  ])('uses supplied synthetic paths for %s independently of mutable display titles', (sourceId, destination) => {
     const original = { ...item, sourceId, title: 'Original' };
     const updated = { ...original, title: 'Renamed' };
     expect(bullets({ ...empty, items: [original] })).toEqual([`- [Original](youtube/${destination}.md)`]);
@@ -164,5 +175,18 @@ describe('navigation Markdown', () => {
     expect(bullets({ ...empty, collections: [{ ...collection, sourceId }] })).toEqual([
       `- [Learning](youtube/collections/${destination}.md)`,
     ]);
+  });
+
+  it('standalone rendering defaults to current readable filenames after a title change', () => {
+    const original = { ...item, title: 'Привіт AI' };
+    const updated = { ...original, title: 'Renamed' };
+    const firstPath = buildObsidianRelativePath(original);
+    const updatedPath = buildObsidianRelativePath(updated);
+    expect(firstPath).not.toBe(updatedPath);
+    expect(firstPath.split('--')[1]).toBe(updatedPath.split('--')[1]);
+    expect(renderWithDestinations({ ...empty, items: [original] }))
+      .toContain(`](${encodeMarkdownDestination(firstPath)})`);
+    expect(renderWithDestinations({ ...empty, items: [updated] }))
+      .toContain(`](${encodeMarkdownDestination(updatedPath)})`);
   });
 });

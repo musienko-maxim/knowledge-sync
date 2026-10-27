@@ -1,18 +1,21 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, dirname, join, resolve } from 'node:path';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { KnowledgeItem } from '../src/core/models/knowledge-item.js';
-import { exportObsidianNote } from '../src/outputs/obsidian/export-note.js';
 import { exportObsidianNotes } from '../src/outputs/obsidian/export-notes.js';
+import { buildObsidianRelativePath } from '../src/outputs/obsidian/note-path.js';
+import { renderKnowledgeItemMarkdown } from '../src/outputs/markdown.js';
+import * as writer from '../src/outputs/obsidian/write-generated-note.js';
 
-vi.mock('../src/outputs/obsidian/export-note.js', () => ({ exportObsidianNote: vi.fn() }));
+vi.mock('../src/outputs/obsidian/write-generated-note.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../src/outputs/obsidian/write-generated-note.js')>(),
+}));
 
-const exportOne = vi.mocked(exportObsidianNote);
-const vault = ' relative vault with spaces ';
-const itemA: KnowledgeItem = Object.freeze({
-  source: 'example', sourceId: 'z-last', title: 'Z', url: 'https://example.com/z',
-});
-const itemB: KnowledgeItem = Object.freeze({
-  source: 'example', sourceId: 'a-first', title: 'A', url: 'https://example.com/a',
-});
+let directory: string;
+let vault: string;
+const itemA: KnowledgeItem = Object.freeze({ source: 'example', sourceId: 'z-last', title: 'Z', url: 'https://example.com/z' });
+const itemB: KnowledgeItem = Object.freeze({ source: 'example', sourceId: 'a-first', title: 'A', url: 'https://example.com/a' });
 const itemC: KnowledgeItem = Object.freeze({ ...itemA, sourceId: 'middle', title: 'M' });
 
 function deferred() {
@@ -22,153 +25,104 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-beforeEach(() => {
-  exportOne.mockReset().mockResolvedValue(undefined);
+beforeEach(async () => {
+  directory = await mkdtemp(join(tmpdir(), 'ks-item-batch-'));
+  vault = join(directory, 'vault');
+  await mkdir(vault);
 });
 
-describe('exportObsidianNotes', () => {
-  it.each(['', '\0', 'missing/vault'])('returns zeros for empty input without accessing vault %j', async (path) => {
-    await expect(exportObsidianNotes(path, Object.freeze([]))).resolves.toEqual({
-      processed: 0, succeeded: 0, failed: 0, failures: [],
-    });
-    expect(exportOne).not.toHaveBeenCalled();
+afterEach(async () => {
+  vi.restoreAllMocks();
+  const cleanup = resolve(directory);
+  if (dirname(cleanup) !== resolve(tmpdir()) || !basename(cleanup).startsWith('ks-item-batch-')) throw new Error('Unexpected cleanup path.');
+  await rm(cleanup, { recursive: true, force: true });
+});
+
+it.each(['', '\0', 'missing/vault'])('keeps empty batches a no-op for vault %j', async (path) => {
+  const write = vi.spyOn(writer, 'writeGeneratedObsidianNote');
+  expect(await exportObsidianNotes(path, Object.freeze([]))).toEqual({ processed: 0, succeeded: 0, failed: 0, failures: [] });
+  expect(write).not.toHaveBeenCalled();
+});
+
+it('publishes one readable generated item without navigation or collection output', async () => {
+  expect(await exportObsidianNotes(vault, [itemA])).toEqual({ processed: 1, succeeded: 1, failed: 0, failures: [] });
+  expect(await readFile(join(vault, buildObsidianRelativePath(itemA)), 'utf8')).toBe(renderKnowledgeItemMarkdown(itemA));
+  expect(await readdir(vault)).toEqual(['example']);
+  expect(await readdir(join(vault, 'example'))).toEqual([basename(buildObsidianRelativePath(itemA))]);
+});
+
+it('publishes a deterministic sorted snapshot without mutating frozen inputs', async () => {
+  const write = vi.spyOn(writer, 'writeGeneratedObsidianNote');
+  const items = Object.freeze([itemA, itemB, itemC]);
+  const before = JSON.stringify(items);
+  expect(await exportObsidianNotes(vault, items)).toEqual({ processed: 3, succeeded: 3, failed: 0, failures: [] });
+  expect(write.mock.calls.map((call) => call[4].sourceId)).toEqual(['a-first', 'middle', 'z-last']);
+  expect(JSON.stringify(items)).toBe(before);
+  const bytes = await Promise.all(items.map((item) => readFile(join(vault, buildObsidianRelativePath(item)))));
+  await exportObsidianNotes(vault, [...items].reverse());
+  expect(await Promise.all(items.map((item) => readFile(join(vault, buildObsidianRelativePath(item)))))).toEqual(bytes);
+});
+
+it.each([false, true])('rejects duplicate identities before any write (changed title=%s)', async (changed) => {
+  const duplicate = changed ? { ...itemA, title: 'Updated' } : itemA;
+  const write = vi.spyOn(writer, 'writeGeneratedObsidianNote');
+  await expect(exportObsidianNotes(vault, [itemB, itemA, duplicate])).rejects.toThrow(/duplicate item identity/);
+  expect(write).not.toHaveBeenCalled();
+  expect(await readdir(vault)).toEqual([]);
+});
+
+it('preflights every item before publishing an otherwise writable earlier item', async () => {
+  const blocked = join(vault, buildObsidianRelativePath(itemA));
+  await mkdir(dirname(blocked), { recursive: true });
+  await writeFile(blocked, 'Personal content\n');
+  const write = vi.spyOn(writer, 'writeGeneratedObsidianNote');
+  await expect(exportObsidianNotes(vault, [itemB, itemA])).rejects.toMatchObject({
+    conflicts: [{ index: 1, kind: 'item', code: 'unowned-target' }],
   });
+  expect(write).not.toHaveBeenCalled();
+  expect(await readFile(blocked, 'utf8')).toBe('Personal content\n');
+  await expect(readFile(join(vault, buildObsidianRelativePath(itemB)))).rejects.toMatchObject({ code: 'ENOENT' });
+});
 
-  it('exports one successful item exactly once', async () => {
-    await expect(exportObsidianNotes(vault, [itemA])).resolves.toEqual({
-      processed: 1, succeeded: 1, failed: 0, failures: [],
-    });
-    expect(exportOne).toHaveBeenCalledExactlyOnceWith(vault, itemA);
-  });
+it('rejects an invalid vault globally instead of recording fictitious per-item write attempts', async () => {
+  const write = vi.spyOn(writer, 'writeGeneratedObsidianNote');
+  await expect(exportObsidianNotes('', [itemA, itemB])).rejects.toMatchObject({ code: 'missing-vault' });
+  expect(write).not.toHaveBeenCalled();
+});
 
-  it('preserves the frozen array, item references, original order, and vault string', async () => {
-    const items = Object.freeze([itemA, itemB, itemC]);
-    const original = items.map((item) => ({ ...item }));
-    const result = await exportObsidianNotes(vault, items);
-    expect(result).toEqual({ processed: 3, succeeded: 3, failed: 0, failures: [] });
-    expect(exportOne).toHaveBeenCalledTimes(items.length);
-    items.forEach((item, index) => {
-      expect(exportOne.mock.calls[index]![0]).toBe(vault);
-      expect(exportOne.mock.calls[index]![1]).toBe(item);
-    });
-    expect(items).toEqual(original);
-  });
+it.each(['failure', 123, { code: 'TEST' }, null, undefined])('retains write failures and continues the current item phase (%j)', async (error) => {
+  const write = vi.spyOn(writer, 'writeGeneratedObsidianNote').mockRejectedValueOnce(error);
+  const result = await exportObsidianNotes(vault, [itemA, itemB]);
+  expect(result).toEqual({ processed: 2, succeeded: 1, failed: 1, failures: [{ index: 0, item: itemB, error }] });
+  expect(result.failures[0]!.error).toBe(error);
+  expect(write).toHaveBeenCalledTimes(2);
+  expect(await readFile(join(vault, buildObsidianRelativePath(itemA)), 'utf8')).toBe(renderKnowledgeItemMarkdown(itemA));
+  expect(await readdir(vault)).not.toContain('Knowledge Sync.md');
+});
 
-  it('counts duplicate references and different versions of the same identity independently', async () => {
-    const updated = Object.freeze({ ...itemA, title: 'Updated' });
-    const items = Object.freeze([itemA, itemA, updated, itemB]);
-    const error = new Error('Later duplicate write failed');
-    exportOne.mockResolvedValueOnce(undefined).mockResolvedValueOnce(undefined).mockRejectedValueOnce(error);
-    const result = await exportObsidianNotes(vault, items);
-    expect(result).toEqual({
-      processed: 4, succeeded: 3, failed: 1, failures: [{ index: 2, item: updated, error }],
-    });
-    expect(exportOne).toHaveBeenCalledTimes(4);
-    items.forEach((item, index) => expect(exportOne.mock.calls[index]![1]).toBe(item));
-    expect(result.failures[0]!.item).toBe(updated);
-    expect(result.failures[0]!.error).toBe(error);
-  });
+it('retains multiple failures in planned order with valid counts', async () => {
+  const errors = [new Error('first'), new Error('last')];
+  vi.spyOn(writer, 'writeGeneratedObsidianNote').mockRejectedValueOnce(errors[0]).mockResolvedValueOnce().mockRejectedValueOnce(errors[1]);
+  const result = await exportObsidianNotes(vault, [itemA, itemB, itemC]);
+  expect(result).toEqual({ processed: 3, succeeded: 1, failed: 2,
+    failures: [{ index: 0, item: itemB, error: errors[0] }, { index: 2, item: itemA, error: errors[1] }] });
+});
 
-  it.each(['throw', 'reject'] as const)('continues after a middle item fails by %s', async (mode) => {
-    const error = new Error('Item failed');
-    exportOne.mockResolvedValueOnce(undefined).mockImplementationOnce(() => {
-      if (mode === 'throw') throw error;
-      return Promise.reject(error);
-    });
-    const result = await exportObsidianNotes(vault, [itemA, itemB, itemC]);
-    expect(result).toEqual({
-      processed: 3, succeeded: 2, failed: 1, failures: [{ index: 1, item: itemB, error }],
-    });
-    expect(exportOne).toHaveBeenCalledTimes(3);
-    expect(exportOne).toHaveBeenNthCalledWith(3, vault, itemC);
-    expect(result.failures[0]!.item).toBe(itemB);
-    expect(result.failures[0]!.error).toBe(error);
-  });
-
-  it('collects multiple failures in ascending input-index order and satisfies all count invariants', async () => {
-    const items = Object.freeze([itemA, itemB, itemC, itemA]);
-    const errors = [new Error('First'), new Error('Second'), new Error('Third')];
-    exportOne.mockRejectedValueOnce(errors[0]).mockResolvedValueOnce(undefined)
-      .mockRejectedValueOnce(errors[1]).mockRejectedValueOnce(errors[2]);
-    const result = await exportObsidianNotes(vault, items);
-    expect(result.processed).toBe(items.length);
-    expect(result.succeeded).toBe(1);
-    expect(result.failed).toBe(3);
-    expect(result.processed).toBe(result.succeeded + result.failed);
-    expect(result.failed).toBe(result.failures.length);
-    expect(result.failures.map((failure) => failure.index)).toEqual([0, 2, 3]);
-    result.failures.forEach((failure, index) => {
-      expect(failure.item).toBe(items[failure.index]);
-      expect(failure.error).toBe(errors[index]);
-    });
-    expect(exportOne).toHaveBeenCalledTimes(items.length);
-  });
-
-  it.each(['failure', 123, { code: 'TEST' }, null, undefined])('preserves non-Error rejection %j', async (error) => {
-    exportOne.mockRejectedValueOnce(error);
-    const result = await exportObsidianNotes(vault, [itemA, itemB]);
-    expect(result).toEqual({
-      processed: 2, succeeded: 1, failed: 1, failures: [{ index: 0, item: itemA, error }],
-    });
-    expect(result.failures[0]!.error).toBe(error);
-    expect(result.failures[0]!.item).toBe(itemA);
-    expect(exportOne).toHaveBeenNthCalledWith(2, vault, itemB);
-  });
-
-  it('returns one failure per item when the single-item exporter rejects an invalid vault', async () => {
-    const error = new Error('Vault path must not be blank.');
-    exportOne.mockRejectedValue(error);
-    const items = Object.freeze([itemA, itemB, itemC]);
-    const result = await exportObsidianNotes('', items);
-    expect(result).toEqual({
-      processed: 3, succeeded: 0, failed: 3,
-      failures: items.map((item, index) => ({ index, item, error })),
-    });
-    expect(exportOne).toHaveBeenCalledTimes(3);
-    items.forEach((item, index) => expect(exportOne).toHaveBeenNthCalledWith(index + 1, '', item));
-  });
-
-  it.each([
-    { firstRejects: false, lastRejects: false }, { firstRejects: false, lastRejects: true },
-    { firstRejects: true, lastRejects: false }, { firstRejects: true, lastRejects: true },
-  ])('awaits each item and the final settlement (%j)', async ({ firstRejects, lastRejects }) => {
-    const first = deferred();
-    const last = deferred();
-    const lastStarted = deferred();
-    exportOne.mockReturnValueOnce(first.promise).mockImplementationOnce(() => {
-      lastStarted.resolve();
-      return last.promise;
-    });
-    const batch = exportObsidianNotes(vault, [itemA, itemB]);
-    const onSuccess = vi.fn();
-    const onFailure = vi.fn();
-    const observed = batch.then(onSuccess, onFailure);
-    await Promise.resolve();
-    expect(exportOne).toHaveBeenCalledExactlyOnceWith(vault, itemA);
-    expect(onSuccess).not.toHaveBeenCalled();
-    expect(onFailure).not.toHaveBeenCalled();
-
-    const firstError = new Error('First item failed');
-    if (firstRejects) first.reject(firstError);
-    else first.resolve();
-    await lastStarted.promise;
-    await Promise.resolve();
-    expect(exportOne).toHaveBeenCalledTimes(2);
-    expect(exportOne).toHaveBeenNthCalledWith(2, vault, itemB);
-    expect(onSuccess).not.toHaveBeenCalled();
-    expect(onFailure).not.toHaveBeenCalled();
-
-    const lastError = new Error('Last item failed');
-    if (lastRejects) last.reject(lastError);
-    else last.resolve();
-    await observed;
-    const failures = [
-      ...(firstRejects ? [{ index: 0, item: itemA, error: firstError }] : []),
-      ...(lastRejects ? [{ index: 1, item: itemB, error: lastError }] : []),
-    ];
-    expect(onSuccess).toHaveBeenCalledExactlyOnceWith({
-      processed: 2, succeeded: 2 - failures.length, failed: failures.length, failures,
-    });
-    expect(onFailure).not.toHaveBeenCalled();
-  });
+it.each([false, true])('awaits sequential writes and final settlement (first rejects=%s)', async (firstRejects) => {
+  const first = deferred(), last = deferred(), firstStarted = deferred(), lastStarted = deferred();
+  const write = vi.spyOn(writer, 'writeGeneratedObsidianNote')
+    .mockImplementationOnce(() => { firstStarted.resolve(); return first.promise; })
+    .mockImplementationOnce(() => { lastStarted.resolve(); return last.promise; });
+  let settled = false;
+  const batch = exportObsidianNotes(vault, [itemA, itemB]).then((result) => { settled = true; return result; });
+  await firstStarted.promise;
+  expect(write).toHaveBeenCalledTimes(1);
+  expect(settled).toBe(false);
+  if (firstRejects) first.reject(undefined); else first.resolve();
+  await lastStarted.promise;
+  expect(write).toHaveBeenCalledTimes(2);
+  expect(settled).toBe(false);
+  last.resolve();
+  expect(await batch).toEqual({ processed: 2, succeeded: firstRejects ? 1 : 2, failed: firstRejects ? 1 : 0,
+    failures: firstRejects ? [{ index: 0, item: itemB, error: undefined }] : [] });
 });

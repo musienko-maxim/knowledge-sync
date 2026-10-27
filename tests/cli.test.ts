@@ -5,6 +5,7 @@ import type { YouTubeCommands } from '../src/cli/youtube.js';
 import { SyncCommandError } from '../src/cli/youtube-sync.js';
 import { YouTubeError } from '../src/collectors/youtube/youtube-error.js';
 import type { NavigationExportOutcome } from '../src/outputs/obsidian/export-projection.js';
+import { STALE_OUTPUT_WARNING } from '../src/cli/obsidian-export.js';
 
 const completedNavigation = { status: 'completed' } as const;
 const skippedNavigation = { status: 'skipped', reason: 'upstream-failure' } as const;
@@ -69,7 +70,7 @@ describe('account sync CLI', () => {
     });
     await expect(program.parseAsync(['youtube', 'sync-all', '--vault', 'vault'], { from: 'user' }))
       .rejects.toMatchObject({ exitCode: 1, code: 'knowledge-sync.account-sync' });
-    expect(output()).toBe('Playlists: discovered=2 succeeded=2 failed=0 unattempted=0\nItems: processed=4 new=3 changed=1 unchanged=0\nMemberships: removed=0\nNavigation: skipped (earlier export failure)\n');
+    expect(output()).toBe('Playlists: discovered=2 succeeded=2 failed=0 unattempted=0\nItems: processed=4 new=3 changed=1 unchanged=0\nMemberships: removed=0\n' + STALE_OUTPUT_WARNING + '\nNavigation: skipped (earlier export failure)\n');
     expect(errors()).not.toContain('YouTube command failed');
   });
   it.each([false, true])('fails for collection output while retaining item counters (unexpected=%s)', async (unexpected) => {
@@ -370,7 +371,7 @@ describe('YouTube sync-obsidian CLI', () => {
     await program.parseAsync(['youtube', 'sync-obsidian', ...args], { from: 'user' });
     expect(commands.syncObsidian).toHaveBeenCalledExactlyOnceWith(playlist, options);
     expect(commands.sync).not.toHaveBeenCalled();
-    expect(output()).toBe('Sync: processed=3 new=1 changed=1 unchanged=1\nMemberships: removed=0\nExport: attempted=5 succeeded=5 failed=0\nCollections: attempted=1 succeeded=1 failed=0\nNavigation: succeeded=1 failed=0\n');
+    expect(output()).toBe('Sync: processed=3 new=1 changed=1 unchanged=1\nMemberships: removed=0\n' + STALE_OUTPUT_WARNING + '\nExport: attempted=5 succeeded=5 failed=0\nCollections: attempted=1 succeeded=1 failed=0\nNavigation: succeeded=1 failed=0\n');
     expect(errors()).toBe('');
   });
 
@@ -396,7 +397,7 @@ describe('YouTube sync-obsidian CLI', () => {
     commands.syncObsidian.mockResolvedValue(result);
     await expect(program.parseAsync(['youtube', 'sync-obsidian', 'PLone'], { from: 'user' }))
       .rejects.toMatchObject({ exitCode: 1, code: 'knowledge-sync.obsidian-export' });
-    expect(output()).toBe('Sync: processed=1 new=1 changed=0 unchanged=0\nMemberships: removed=0\nExport: attempted=2 succeeded=1 failed=1\nCollections: attempted=1 succeeded=1 failed=0\nNavigation: succeeded=1 failed=0\n');
+    expect(output()).toBe('Sync: processed=1 new=1 changed=0 unchanged=0\nMemberships: removed=0\n' + STALE_OUTPUT_WARNING + '\nExport: attempted=2 succeeded=1 failed=1\nCollections: attempted=1 succeeded=1 failed=0\nNavigation: succeeded=1 failed=0\n');
     expect(errors()).toContain('index 1 (source="other\\n\\u001b[31m", sourceId="a\\"\\u009b\\u202e")');
     expect(errors()).toContain('Permission denied while writing the note (EACCES).');
     expect(errors()).toContain('successful SQLite writes remain committed');

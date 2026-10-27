@@ -11,6 +11,7 @@ import * as config from '../src/auth/google-client-config.js';
 import * as oauth from '../src/auth/google-oauth.js';
 import { buildObsidianRelativePath } from '../src/outputs/obsidian/note-path.js';
 import { renderKnowledgeItemMarkdown } from '../src/outputs/markdown.js';
+import { STALE_OUTPUT_WARNING } from '../src/cli/obsidian-export.js';
 
 const realOpen = sqlite.openStorage;
 let directory: string;
@@ -18,6 +19,7 @@ let vault: string;
 let database: string;
 let stores: Storage[];
 const video = { source: 'youtube', sourceId: 'videoA', title: 'Video A', url: 'https://www.youtube.com/watch?v=videoA' };
+const skippedPublication = `${STALE_OUTPUT_WARNING}\nItems: skipped (preflight conflict)\nCollections: skipped (preflight conflict)\nNavigation: skipped (preflight conflict)\n`;
 
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'knowledge-sync-cli-obsidian-'));
@@ -91,7 +93,7 @@ it('runs the command through real persistence and full-snapshot export including
   transport();
   const command = cli();
   await command.run(['--db', database, '--vault', vault]);
-  expect(command.output()).toBe('Sync: processed=1 new=1 changed=0 unchanged=0\nMemberships: removed=0\nExport: attempted=2 succeeded=2 failed=0\nCollections: attempted=1 succeeded=1 failed=0\nNavigation: succeeded=1 failed=0\n');
+  expect(command.output()).toBe('Sync: processed=1 new=1 changed=0 unchanged=0\nMemberships: removed=0\n' + STALE_OUTPUT_WARNING + '\nExport: attempted=2 succeeded=2 failed=0\nCollections: attempted=1 succeeded=1 failed=0\nNavigation: succeeded=1 failed=0\n');
   expect(command.errors()).toBe('');
   const navigation = await readFile(join(vault, 'Knowledge Sync.md'), 'utf8');
   expect(navigation).toContain('<!-- knowledge-sync:generated-navigation:v1 -->\n');
@@ -128,20 +130,21 @@ it('supports OAuth without an API key through the real collector and output pipe
   await expectClosed();
 });
 
-it('refuses user navigation content, retains committed data and note results, then succeeds on retry', async () => {
+it('refuses user navigation content before any note publication, retains committed data, then succeeds on retry', async () => {
   const target = join(vault, 'Knowledge Sync.md');
   const userContent = 'Personal dashboard\nprivate content\n';
   await writeFile(target, userContent);
   transport();
   const first = cli();
   await expect(first.run()).rejects.toMatchObject({ exitCode: 1, code: 'knowledge-sync.obsidian-export' });
-  expect(first.output()).toBe('Sync: processed=1 new=1 changed=0 unchanged=0\nMemberships: removed=0\nExport: attempted=1 succeeded=1 failed=0\nCollections: attempted=1 succeeded=1 failed=0\nNavigation: succeeded=0 failed=1\n');
-  expect(first.errors()).toContain('Navigation export refused: Knowledge Sync.md is not a recognized generated page.\n');
+  expect(first.output()).toBe(skippedPublication);
+  expect(first.errors()).toContain('Export conflict: kind=navigation index=0 code=unowned-target.');
   expect(first.errors()).not.toMatch(/private content|YouTube command failed/);
   expect(first.errors()).not.toContain(vault);
   expect(await readFile(target, 'utf8')).toBe(userContent);
   const notePath = join(vault, buildObsidianRelativePath(video));
-  const note = await readFile(notePath, 'utf8');
+  await expect(readFile(notePath)).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(await readdir(vault)).toEqual(['Knowledge Sync.md']);
   const persisted = realOpen(database);
   let before;
   try {
@@ -159,7 +162,7 @@ it('refuses user navigation content, retains committed data and note results, th
   expect(retry.output()).toContain('Navigation: succeeded=1 failed=0\n');
   expect(retry.errors()).toBe('');
   expect(await readFile(target, 'utf8')).toContain('<!-- knowledge-sync:generated-navigation:v1 -->\n');
-  expect(await readFile(notePath, 'utf8')).toBe(note);
+  expect(await readFile(notePath, 'utf8')).toBe(renderKnowledgeItemMarkdown(before.items[0]!));
   expect(await readFile(join(vault, 'Personal dashboard.md'), 'utf8')).toBe(userContent);
   const reopened = realOpen(database);
   try {
@@ -168,16 +171,18 @@ it('refuses user navigation content, retains committed data and note results, th
   await expectClosed();
 });
 
-it('reports a returned write failure once, closes storage, and exports unchanged data on the next command', async () => {
+it('reports a destination blocker once before publication, closes storage, and succeeds on retry', async () => {
   const destination = join(vault, buildObsidianRelativePath(video));
   await mkdir(destination, { recursive: true });
   transport();
   const first = cli();
   await expect(first.run()).rejects.toMatchObject({ exitCode: 1, code: 'knowledge-sync.obsidian-export' });
-  expect(first.output()).toBe('Sync: processed=1 new=1 changed=0 unchanged=0\nMemberships: removed=0\nExport: attempted=1 succeeded=0 failed=1\nCollections: attempted=1 succeeded=1 failed=0\nNavigation: succeeded=1 failed=0\n');
-  expect(first.errors()).toContain('index 0 (source="youtube", sourceId="videoA")');
-  expect(first.errors().match(/Export failed at index/g)).toHaveLength(1);
+  expect(first.output()).toBe(skippedPublication);
+  expect(first.errors()).toContain('Export conflict: kind=item index=0 code=unsafe-path.');
+  expect(first.errors().match(/Export conflict:/g)).toHaveLength(1);
   expect(first.errors()).not.toMatch(/YouTube command failed|fake-/);
+  expect(await readdir(vault)).toEqual(['youtube']);
+  expect(await readdir(join(vault, 'youtube'))).toEqual([basename(destination)]);
   await expectClosed();
   const persisted = realOpen(database);
   try {
@@ -192,18 +197,18 @@ it('reports a returned write failure once, closes storage, and exports unchanged
   transport();
   const later = cli();
   await later.run();
-  expect(later.output()).toBe('Sync: processed=1 new=0 changed=0 unchanged=1\nMemberships: removed=0\nExport: attempted=1 succeeded=1 failed=0\nCollections: attempted=1 succeeded=1 failed=0\nNavigation: succeeded=1 failed=0\n');
+  expect(later.output()).toBe('Sync: processed=1 new=0 changed=0 unchanged=1\nMemberships: removed=0\n' + STALE_OUTPUT_WARNING + '\nExport: attempted=1 succeeded=1 failed=0\nCollections: attempted=1 succeeded=1 failed=0\nNavigation: succeeded=1 failed=0\n');
   expect(later.errors()).toBe('');
   expect(await readFile(destination, 'utf8')).toContain('# Video A');
   await expectClosed();
 });
 
-it('fails collection export for an empty playlist and nonexistent vault', async () => {
+it('blocks all publication for an empty playlist and nonexistent vault', async () => {
   transport(true);
   const command = cli();
   await expect(command.run(['--vault', join(directory, 'missing')])).rejects.toMatchObject({ exitCode: 1, code: 'knowledge-sync.obsidian-export' });
-  expect(command.output()).toBe('Sync: processed=0 new=0 changed=0 unchanged=0\nMemberships: removed=0\nExport: attempted=0 succeeded=0 failed=0\nCollections: attempted=1 succeeded=0 failed=1\nNavigation: succeeded=0 failed=1\n');
-  expect(command.errors()).toContain('Collection export failed at index 0');
+  expect(command.output()).toBe(skippedPublication);
+  expect(command.errors()).toContain('Export preflight refused: missing-vault.');
   expect(await readdir(directory)).not.toContain('missing');
   await expectClosed();
 });
@@ -231,12 +236,15 @@ it.each([false, true])('uses actual process status for the built-in CLI path (bl
   ], { cwd: resolve('.'), env: { ...process.env, YOUTUBE_API_KEY: 'fake-api-key' }, encoding: 'utf8', timeout: 15000, windowsHide: true });
   expect(child.error).toBeUndefined();
   expect(child.status, child.stderr).toBe(blocked ? 1 : 0);
-  expect(child.stdout, child.stderr).toContain('Sync: processed=1 new=1 changed=0 unchanged=0');
-  expect(child.stdout).toContain(blocked ? 'Export: attempted=1 succeeded=0 failed=1' : 'Export: attempted=1 succeeded=1 failed=0');
   if (blocked) {
-    expect(child.stderr.match(/Export failed at index/g)).toHaveLength(1);
+    expect(child.stdout).toBe(skippedPublication);
+    expect(child.stderr.match(/Export conflict:/g)).toHaveLength(1);
     expect(child.stderr).not.toContain('YouTube command failed');
-  } else expect(child.stderr).toBe('');
+  } else {
+    expect(child.stdout, child.stderr).toContain('Sync: processed=1 new=1 changed=0 unchanged=0');
+    expect(child.stdout).toContain('Export: attempted=1 succeeded=1 failed=0');
+    expect(child.stderr).toBe('');
+  }
   const persisted = realOpen(database);
   try { expect(await persisted.knowledgeItems.findByIdentity(video.source, video.sourceId)).not.toBeNull(); }
   finally { persisted.close(); }

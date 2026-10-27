@@ -38,6 +38,12 @@ Task 021 adds local Facebook Saved import from an extracted `collections.json`.
 It shares the existing SQLite repositories and optional full-snapshot export.
 Real-vault acceptance is a separate step.
 
+Task 024 adds portable readable filenames, a shared immutable export plan,
+content fingerprints and non-destructive phased publication for every source.
+`export obsidian --db ... --vault ... [--dry-run]` exports existing SQLite without
+synchronization or credentials. These rules supersede the earlier identity-only
+filename and overwrite behavior described in the historical task progression.
+
 ## Facebook Saved import
 
 ```powershell
@@ -87,9 +93,10 @@ version, entity kind, source, and complete identity. Export refuses unowned
 collisions and symlink/junction paths, checks intermediate directories, and uses
 exclusive temporary files followed by replacement. Failed replacement preserves
 existing bytes. Facebook text is rendered literally. These protections also
-apply when a YouTube command exports stored Facebook records; existing YouTube
-filenames and Markdown remain compatible. Generated Facebook pages are replaceable
-output, so keep personal edits in separate notes.
+apply to every source when a YouTube or Facebook command exports stored records.
+Task 024 adds content fingerprints and readable filenames; old files remain
+untouched. Keep personal edits in separate notes; modified generated destinations
+block replacement.
 
 CLI summaries distinguish input occurrences, URL-bearing entries, duplicate items,
 repeated memberships, skips, persistence results, and export results. Warning and
@@ -122,7 +129,7 @@ Running the CLI without arguments also prints help. The package declares the
 `.env.example` is a reference template. Set supported variables in your shell's
 process environment; the CLI does **not** automatically load `.env`.
 
-The database path is selected in this order: `--db`, `DATABASE_PATH`, then
+For synchronization/import commands, the database path is selected in this order: `--db`, `DATABASE_PATH`, then
 `./data/knowledge-sync.sqlite`. Relative paths use the current working directory;
 missing parent directories are created. Blank explicit database paths are rejected.
 Keep the database **outside the vault**. If `OBSIDIAN_VAULT_PATH` is set, the command
@@ -301,8 +308,8 @@ Example output (counts may differ because export covers persisted identities):
 Sync: processed=12 new=2 changed=1 unchanged=9
 Memberships: removed=2
 Export: attempted=15 succeeded=14 failed=1
-Collections: attempted=3 succeeded=3 failed=0
-Navigation: succeeded=1 failed=0
+Collections: skipped (earlier export failure)
+Navigation: skipped (earlier export failure)
 ```
 
 Full success exits 0. Navigation failures print a safe diagnostic and exit 1 while
@@ -315,205 +322,132 @@ results or fatal application failures.
 
 SQLite remains the source of truth; output failure does not undo successful
 persistence. A later successful sync attempts unchanged items again. Generated
-notes overwrite existing content at their paths, including local edits. There
-is no automatic retry, output rollback, vault scanning, or file deletion. A completely empty projection
+notes replace only verified unmodified generated destinations. There
+is no automatic retry, output rollback, or file deletion. A completely empty projection
 (no items or collections) returns zero counts without accessing the vault. An empty
 playlist still produces a collection note: unlike the earlier item-only behavior,
 `sync-obsidian` with an empty playlist and a nonexistent vault now fails.
 
-## Markdown rendering
+## Readable Markdown export
 
-`renderKnowledgeItemMarkdown(item: KnowledgeItem): string` is exported from
-`src/outputs/markdown.ts`. It performs no I/O and does not mutate or revalidate
-the supplied item. It is independent of synchronization and the CLI.
+Task 024 uses the current persisted title plus a stable identity suffix for
+physical filenames:
 
-The document contains YAML front matter in this order: `source`, `sourceId`,
-`url`, `title`, `author`, `collection`, `publishedAt`. All values are double-quoted
-with deterministic escaping. Optional metadata is omitted only when undefined;
-empty author/collection strings remain explicit `""`. Publication dates retain
-their supplied representation. Description appears only in the body.
+```text
+youtube/understanding-ai--<32-hex>.md
+youtube/collections/my-learning--<32-hex>.md
+facebook/цікава-стаття--<32-hex>.md
+```
 
-After the closing front-matter delimiter and a blank line, the renderer prefixes
-the verbatim title with `# `. An absent description leaves the body as
-`# <title>\n`; an empty description produces `# <title>\n\n`. A present description
-follows that blank line unchanged. The renderer appends a final `\n` only if the
-assembled document does not already end with one.
+Titles use NFC, default lowercase and Unicode letters/marks/numbers. Prefixes
+are bounded to 80 code points and 160 UTF-8 bytes without splitting graphemes.
+The suffix is the first 32 lowercase SHA-256 hex characters of UTF-8
+`JSON.stringify(["knowledge-sync-readable-path-v1", kind, source, sourceId])`,
+where kind is `item` or `collection`. Full original identities remain unchanged
+in SQLite and ownership metadata. Source directories retain their safe byte
+encoding. Windows-invalid components, portable case/Unicode collisions, and
+absolute target or temporary paths exceeding 240 UTF-16 units block export.
 
-Generated separators use LF on every platform. Supplied title and description
-content retains whitespace, CRLF, trailing blank lines, and Markdown syntax.
-Consequently, the output need not be entirely LF, and arbitrary title content
-may produce more than one heading or other Markdown structures. This renderer
-does not sanitize Markdown or generate filenames, write files, or record imports.
+A title change creates a new filename; **the old file remains**. Generated links
+point to current planned destinations. Historical files are never adopted,
+renamed or deleted automatically. Removing them later can break user-authored
+backlinks, which this tool does not rewrite.
 
-## Obsidian note writing
+## Export existing SQLite without synchronization
 
-`writeObsidianNote(vaultPath, relativePath, content): Promise<void>` is exported
-from `src/outputs/obsidian/write-note.ts`. The caller supplies final Markdown text
-and the destination path; the writer does not render, generate filenames, read
-configuration, or participate in sync. The existing `Output.write(item)` interface
-is unchanged.
+Both paths are required; this command has no environment/default database
+fallback and never opens writable storage or requests source credentials.
+The vault must already exist, and SQLite must be outside it.
 
-The vault must already exist and be a directory. Blank vault paths are rejected;
-relative vault paths resolve against the working directory. Destination paths
-must be relative and resolve strictly below the vault root. Empty/root-equivalent
-paths and traversal outside the vault are rejected before filesystem changes.
-Contained normalization such as `folder/../note.md` is allowed. Path rules are
-native to the host: Windows handles both separators and rejects rooted, drive-qualified
-(including `C:note.md`), and UNC destinations; POSIX keeps its native filename semantics.
-Otherwise valid path values are not trimmed or sanitized.
+```powershell
+npm.cmd run build
+node dist/cli/index.js export obsidian --db "D:\data\knowledge-sync.sqlite" --vault "D:\scratch\export-vault" --dry-run
+node dist/cli/index.js export obsidian --db "D:\data\knowledge-sync.sqlite" --vault "D:\scratch\export-vault"
+npm.cmd exec --offline --package=. -- knowledge-sync export obsidian --help
+```
 
-Missing parent directories below the vault are created recursively. Existing
-files are overwritten completely with UTF-8 text, without adding a BOM or changing
-content, whitespace, Unicode normalization, or line endings. Repeated writes
-produce the same file content; filesystem errors propagate. Containment is lexical
-only, so symlinks are followed normally. Writes are not atomic and a failed write
-may leave a truncated or partially written file. The writer does not discover
-vaults, read configuration, or orchestrate batches.
+`--dry-run` reads one consistent SQLite transaction, renders the same immutable
+plan used by publication, and checks all expected destinations. It creates no
+files/directories and modifies neither SQLite nor its sidecars. Output reports
+additions, updates, unchanged files, blockers and possible legacy/stale files.
+The leftover count covers existing Markdown files in the planned source and
+collection directories; it does not assert ownership or inventory the entire
+vault. Blockers exit 1 and include safe codes and plan indexes rather than
+private Facebook names, IDs or URLs.
 
-## Single-item Obsidian export
+The initial reader conservatively rejects WAL-mode headers, any `-wal`, `-shm`
+or `-journal` sidecar, symlinks/junctions, incompatible schemas and malformed
+stored records. Even stale or empty sidecars are refused. It does not checkpoint,
+recover, convert or repair databases, and uses memory for SQLite temporary
+storage. Do not delete sidecars to work around rejection. Database and filesystem
+preflight assume no concurrent external changes during export.
 
-[`exportObsidianNote(vaultPath, item): Promise<void>`](src/outputs/obsidian/export-note.ts)
-exports a supplied `KnowledgeItem` into an existing vault. It calls the existing
-path builder, then renderer, then awaits one writer call. Inputs, generated path,
-and Markdown content pass through unchanged; errors reject with the original
-failure. It reads no configuration or database and does not record an import.
+## Publication and generated-file ownership
 
-The pure [path builder](src/outputs/obsidian/note-path.ts) maps only `source` and
-`sourceId` to `<encoded-source>/<encoded-sourceId>.md`. Metadata changes do not
-move the note. Encoding protects identity distinctions on case-insensitive
-filesystems, escapes unsafe characters, and protects Windows device names.
-It does not truncate long identities, so native filesystem length limits can
-still cause an export to fail.
+All production export commands share the same planner and safe publication:
 
-Each call writes the item, including repeated unchanged items. Existing content
-is overwritten through the writer; this single-item function applies no
-incremental-export policy.
-The writer's lexical containment and non-atomic behavior still apply: failures
-can leave created directories or partial content. `sync-obsidian` reaches this
-function through application orchestration and the batch exporter.
+```text
+Consistent SQLite snapshot → immutable paths/rendered content → full preflight
+  → item notes → collection notes → Knowledge Sync.md
+```
 
-## Batch Obsidian export
+Every known path/ownership conflict, including the root navigation page, blocks
+publication before writes. Runtime item failures skip collections and navigation;
+collection failures skip navigation. Within a phase, results retain successful
+and failed writes. There is no transaction across the vault: successfully
+published files remain and a retry converges. Export never reverses committed
+SQLite synchronization/import changes. Empty snapshots leave the vault untouched.
 
-[`exportObsidianNotes(vaultPath, items): Promise<ObsidianBatchExportResult>`](src/outputs/obsidian/export-notes.ts)
-accepts `readonly KnowledgeItem[]` and awaits `exportObsidianNote()` once per
-entry in input order, including duplicates. An individual failure is captured
-and processing continues. The batch waits for the final entry to settle.
+New item/collection notes contain versioned full-identity ownership and a SHA-256
+content fingerprint in valid YAML frontmatter. Unknown, legacy, wrong-identity
+or manually edited destinations are preserved and reported as conflicts.
+Verification hashes actual stored bytes; newline conversion counts as an edit.
+Keep personal annotations in separate notes. Full serialization and hashing
+rules are documented in [the output contract](src/outputs/obsidian/README.md).
 
-The result contains `processed`, `succeeded`, `failed`, and `failures`. Each
-failure stores its zero-based `index`, original `item` reference, and unchanged
-`error: unknown`, in ascending input order. On normal completion,
-`processed === items.length`, `processed === succeeded + failed`, and
-`failed === failures.length`. No input array or item is mutated.
+All sources use ancestor/target symlink and junction checks, exclusively created
+sibling temporary files, ownership rechecks and atomic per-file replacement.
+Failures preserve prior target bytes; unchanged output is not rewritten. Only
+the current invocation's temporary file is cleaned up on an ordinary failure.
+Abrupt interruption can leave temporary files, which subsequent runs preserve.
+One writer and no concurrent external edits are required: rechecks are not locks,
+and universal power-loss durability is not promised. Fingerprints detect edits;
+they are not authentication.
 
-Success means that entry's export call resolved; it does not count unique files
-or guarantee final file contents. A later duplicate may overwrite an earlier
-entry's note, and a failed non-atomic write can leave partial content. There is
-no deduplication, retry, rollback, or collision detection.
+The older item-only `syncToObsidian()` and batch APIs use the shared naming,
+planning and ownership rules without generating root navigation. The legacy
+opaque `writeObsidianNote()` primitive remains available for its original low-level
+contract; production generated exports use the safe generated-note writer.
 
-Vault validation stays in the single-item pipeline. An invalid vault that fails
-every export produces one failure per entry. Empty input returns all-zero counts
-and an empty failures array without accessing the vault. The batch has no CLI,
-sync, configuration, or persistence integration.
+## Rendering and navigation
 
-## Sync to Obsidian
+Item/collection Markdown retains quoted source metadata and human-readable
+`title` frontmatter. Generation uses UTF-8/LF without a BOM. Existing Facebook
+literal-text protections remain; YouTube body formatting retains its existing
+Markdown behavior. SQLite values and original source URLs are not rewritten.
 
-[`syncToObsidian(collector, repository, vaultPath)`](src/application/sync-to-obsidian.ts)
-awaits the existing `sync()`, then `repository.listAll()`, then
-`exportObsidianNotes(vaultPath, items)`. It returns `SyncToObsidianResult` with the
-original nested `{ sync, export }` results. The caller owns storage setup/cleanup
-and supplies the existing vault path; this operation does not load configuration.
+`Knowledge Sync.md` retains the accepted **Collections** and **All items** layout,
+including retained/unassociated items once each. Display titles use NFC,
+control-to-space conversion, collapsed whitespace and fallbacks; sorting uses
+display title then raw source/ID. Duplicate display titles receive identity
+labels. Collection links and root links consume the shared planned destinations,
+with separate Markdown destination encoding. Task 023 source grouping is not
+included.
 
-SQLite is the source of truth for export. Every persisted `KnowledgeItem` is
-attempted on every successful sync, including unchanged items and items absent
-from the current collection. `listAll()` reads the full snapshot in explicit
-ascending `source`, then `sourceId` order. Duplicate collected identities resolve
-to their final stored value, so sync and export entry counts can differ.
+Navigation retains its dedicated first-line marker
+`<!-- knowledge-sync:generated-navigation:v1 -->`. It is intentionally different
+from item/collection fingerprints: edits below a valid navigation marker can be
+replaced. Unknown navigation pages, directories and links block global preflight.
+A completely empty snapshot preserves any existing navigation page.
 
-This full projection is an export policy, not a guarantee that the vault exactly
-mirrors SQLite: individual writes can fail and no filesystem cleanup occurs.
-An item whose export fails remains persisted and will be attempted on a later
-successful sync even if classified unchanged. There is no durable export-state
-tracking or import recording. Existing notes are overwritten, including local
-edits at their generated paths; writes retain the existing non-atomic behavior.
+## Existing-vault boundary
 
-Sync failure skips the snapshot read and export. Read failure skips export.
-These failures and unexpected exporter-level failures propagate unchanged;
-earlier successful persistence remains committed. Normal per-item output failures
-resolve through `ObsidianBatchExportResult.failures` in the nested export result.
-There are no retries, rollback, compensating writes, or transactions spanning
-SQLite and the filesystem. Empty snapshots use the normal exporter and access
-no vault. This generic use case remains available. The CLI now uses
-[`syncCollectionToObsidian`](src/application/sync-collection-to-obsidian.ts), which
-completes collection/item/membership persistence and reconciliation before the shared collection-aware
-snapshot/export sequence described below. Ordinary `youtube sync` uses
-[`syncCollection`](src/application/sync-collection.ts) and performs no export.
-
-## Collection notes and full projection
-
-Both export commands share [readObsidianSnapshot](src/application/read-obsidian-snapshot.ts)
-and [exportObsidianProjection](src/outputs/obsidian/export-projection.ts). All three
-repository reads complete before any filesystem output. The pure projection builder
-rejects duplicate identities/edges and missing parents before writing. Joins use
-complete source plus ID identities; collection/member order uses ordinal source/ID
-comparison, independent of titles and input order. The sequential reads assume a
-single manual writer; they are not a transactionally isolated cross-process snapshot.
-
-Collection notes live at `<encoded-source>/collections/<encoded-collection-id>.md`.
-The existing byte encoder is reused, so renames retain paths and equal titles with
-different IDs remain separate. Existing item paths and Markdown bytes are unchanged.
-Collection front matter is ordered `source`, `sourceId`, `title`; it preserves an
-empty raw title while the heading falls back to the collection ID. Headings and
-link labels escape Markdown/HTML and normalize embedded line breaks. Member links
-use relative paths with a separate URL encoding pass: a literal `%58.md` file is
-linked as `../%2558.md`. Notes use LF and one final newline. Empty collections show
-`_No items._`.
-
-Item export runs first. Individual item failures do not suppress collection notes;
-links can therefore temporarily point to missing item notes. An unexpected item
-batch exception stops the collection phase. An unexpected collection batch exception
-retains completed item counts and the original error in a tagged failure outcome.
-The CLI prints safe diagnostics and exits nonzero for either batch's failures.
-Rerunning retries every persisted note and repairs partial output. There is no
-stale-file deletion, durable export tracking, or atomic
-multi-file write. Existing generated notes, including local edits, are overwritten.
-Reconciled memberships naturally disappear from collection links on the next export;
-orphan item notes remain because their items remain persisted. An export failure
-does not roll back reconciliation, and a later successful export repairs the projection.
-
-## Navigation page
-
-Both `youtube sync-obsidian` and `youtube sync-all --vault <path>` generate
-`Knowledge Sync.md` at the vault root after the item and collection batches.
-Open it in Obsidian for readable **Collections** and **All items** links. Every
-persisted entity appears once, including shared items and items whose memberships
-were removed. Canonical filenames and existing item/collection Markdown stay the
-same; encoded filenames are still visible in the file explorer.
-
-Display titles use NFC, control-to-space conversion, collapsed whitespace, and
-empty-title fallbacks. Each section sorts by normalized title, then source and
-ID, using locale-independent comparison. Equal normalized titles receive an
-identity suffix. Links encode literal filenames separately from display text.
-Equivalent snapshots produce identical navigation bytes, without timestamps.
-
-The page is owned by the generator only when its first line is exactly
-`<!-- knowledge-sync:generated-navigation:v1 -->` (an optional UTF-8 BOM and
-LF/CRLF are recognized). A user-owned file, directory, or symlink at that path
-is preserved and reported as a failed navigation export. Move a conflicting user
-note to another filename before retrying. Edits to a recognized generated page
-are replaced on the next run.
-
-The dedicated writer prepares and closes a complete sibling temporary file before
-renaming it over the destination. Preparation/replacement failures preserve the
-previous page. Cleanup removes only temporary files created by that invocation;
-an abrupt stop may leave an orphan that future runs preserve. Use one writer per
-vault with no concurrent external edits: ownership checks do not eliminate
-check/rename races or promise power-loss durability on every filesystem.
-
-Ordinary note failures still allow navigation generation, so some links can remain
-unresolved until a successful rerun. Unexpected batch exceptions skip navigation.
-A completely empty snapshot also skips it and leaves any previous page untouched.
-SQLite progress and successful earlier writes remain after navigation failure.
-Non-export commands do not create or report navigation.
+Task 024 is validated using temporary SQLite databases and temporary vaults.
+Before a separately authorized real-vault run, inventory actual output, confirm
+fresh DB/vault backups, run `--dry-run`, and review planned links/conflicts.
+Preserve the historical Task 021 backup. Any cleanup or physical migration needs
+its own reviewed allowlist, ownership/content checks and rollback plan. Task 024
+does not migrate the real vault.
 
 ## YouTube account setup
 
@@ -592,7 +526,7 @@ CollectionCollector → syncCollection() → SQLite source of truth → persiste
 - `src/application`: `sync()` collects, classifies, and persists through contracts;
   `syncToObsidian()` then reads the persisted snapshot and invokes batch export.
   The collection-aware variants reuse item classification, await membership
-  persistence, and read all three repositories before the shared full projection.
+  persistence, and use one storage-owned transaction before the shared full projection.
   `syncAccount()` awaits discovery, sequential `syncCollection()` calls, and an
   optional final snapshot/export. Tagged results retain partial summaries and
   original fatal/export errors. Source-specific acquisition and fatal API
@@ -605,12 +539,10 @@ CollectionCollector → syncCollection() → SQLite source of truth → persiste
   normalized fields; repeated imports preserve the original URL and import time.
   Titles never determine identity. `collections` and `collection_memberships`
   track source collections and their many-to-many item relationships separately.
-- `src/outputs`: pure Markdown renderer and asynchronous output contract;
-  `obsidian/note-path.ts` maps identity to a relative path, `write-note.ts` writes
-  supplied text, and `export-note.ts` composes them for one item. `export-notes.ts`
-  delegates sequentially with per-entry failure collection. Collection projection,
-  path/render/link helpers, and collection exporters reuse these contracts and the
-  same writer. These operations add no timestamps or import metadata.
+- `src/outputs`: pure Markdown rendering, readable path derivation and one immutable
+  export plan; full destination preflight precedes phased publication through
+  fingerprint-aware atomic writers. Batch adapters reuse that plan. These
+  operations add no timestamps, path registry or import metadata.
 - `src/cli`: Commander factory separated from the executable for testing;
   single-playlist composition owns authentication selection, database-path
   resolution, and storage cleanup. `sync-obsidian` also resolves the vault, invokes

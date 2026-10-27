@@ -1,5 +1,7 @@
 import { expect, it } from 'vitest';
-import { renderCollectionMarkdown } from '../src/outputs/obsidian/collection-markdown.js';
+import { renderCollectionMarkdown as renderSealedCollection } from '../src/outputs/obsidian/collection-markdown.js';
+import { verifyGeneratedNote } from '../src/outputs/obsidian/generated-note.js';
+import type { CollectionProjection } from '../src/outputs/obsidian/collection-projection.js';
 import { buildObsidianCollectionRelativePath } from '../src/outputs/obsidian/collection-path.js';
 import { encodeMarkdownDestination, escapeMarkdownInline } from '../src/outputs/obsidian/markdown-link.js';
 import { buildObsidianRelativePath } from '../src/outputs/obsidian/note-path.js';
@@ -7,9 +9,16 @@ import { buildObsidianRelativePath } from '../src/outputs/obsidian/note-path.js'
 const collection = { source: 'youtube', sourceId: 'PL123', title: 'Learning' };
 const item = { source: 'youtube', sourceId: 'X', title: 'Video X', url: 'https://example.com/X' };
 
-it('renders ordered YAML, a heading and double-encoded persistent-percent link with exactly one final LF', () => {
+function renderCollectionMarkdown(projection: CollectionProjection): string {
+  const markdown = renderSealedCollection(projection);
+  verifyGeneratedNote(Buffer.from(markdown, 'utf8'), 'collection', projection.collection);
+  return markdown.replace(/^---\nknowledge_sync: [^\n]+\nknowledge_sync_identity: [^\n]+\nknowledge_sync_sha256: [^\n]+\n/, '---\n');
+}
+const destination = (value = item) => encodeMarkdownDestination(`../${buildObsidianRelativePath(value).split('/')[1]}`);
+
+it('renders ordered YAML, a heading and readable destination with exactly one final LF', () => {
   expect(renderCollectionMarkdown({ collection, items: [item] })).toBe(
-    '---\nsource: "youtube"\nsourceId: "PL123"\ntitle: "Learning"\n---\n\n# Learning\n\n- [Video X](../%2558.md)\n');
+    `---\nsource: "youtube"\nsourceId: "PL123"\ntitle: "Learning"\n---\n\n# Learning\n\n- [Video X](${destination()})\n`);
 });
 
 it('preserves empty title metadata while using sourceId for its display heading', () => {
@@ -23,7 +32,7 @@ it('escapes YAML and inline text independently, preserving Unicode and normalizi
   expect(rendered).toContain('title: "Привіт [x] & <b>\\r\\n*hello* \\\\ world\\u2028next"\n');
   const display = 'Привіт \\[x\\] &amp; &lt;b&gt; \\*hello\\* \\\\ world next';
   expect(rendered).toContain(`# ${display}\n`);
-  expect(rendered).toContain(`- [${display}](../%2558.md)\n`);
+  expect(rendered).toContain(`- [${display}](${destination({ ...item, title })})\n`);
   expect(rendered).not.toContain('\r');
   expect(rendered.endsWith('\n\n')).toBe(false);
 });
@@ -42,21 +51,25 @@ it.each([
   expect(encodeMarkdownDestination(path)).toBe(expected);
 });
 
-it('uses existing encoding for both identity components and keeps title-independent paths', () => {
-  expect(buildObsidianCollectionRelativePath(collection)).toBe('youtube/collections/%50%4C123.md');
-  expect(buildObsidianCollectionRelativePath({ ...collection, title: 'Renamed' })).toBe(buildObsidianCollectionRelativePath(collection));
+it('preserves source encoding while title changes update only the readable prefix', () => {
+  const original = buildObsidianCollectionRelativePath(collection);
+  const renamed = buildObsidianCollectionRelativePath({ ...collection, title: 'Renamed' });
+  expect(original).toMatch(/^youtube\/collections\/learning--[0-9a-f]{32}\.md$/);
+  expect(renamed).not.toBe(original);
+  expect(renamed.split('--')[1]).toBe(original.split('--')[1]);
   expect(buildObsidianCollectionRelativePath({ ...collection, sourceId: 'OTHER' })).not.toBe(buildObsidianCollectionRelativePath(collection));
   const unusual = { ...collection, source: 'YouTube/Привіт', sourceId: 'ID % / ?' };
   const itemPath = buildObsidianRelativePath({ ...item, ...unusual });
-  const [source, file] = itemPath.split('/');
-  expect(buildObsidianCollectionRelativePath(unusual)).toBe(`${source}/collections/${file}`);
+  const [source] = itemPath.split('/');
+  expect(buildObsidianCollectionRelativePath(unusual)).toMatch(new RegExp(`^${source}/collections/learning--[0-9a-f]{32}\\.md$`));
+  expect(buildObsidianCollectionRelativePath(unusual).split('/').at(-1)).not.toBe(itemPath.split('/').at(-1));
 });
 
 it('keeps a literal collections item distinct from the collection directory and uses the same path in links', () => {
   const named = { ...item, sourceId: 'collections' };
-  expect(buildObsidianRelativePath(named)).toBe('youtube/collections.md');
-  expect(buildObsidianCollectionRelativePath({ ...collection, sourceId: 'collections' })).toBe('youtube/collections/collections.md');
-  expect(renderCollectionMarkdown({ collection, items: [named] })).toContain('(../collections.md)');
+  expect(buildObsidianRelativePath(named)).toMatch(/^youtube\/video-x--[0-9a-f]{32}\.md$/);
+  expect(buildObsidianCollectionRelativePath({ ...collection, sourceId: 'collections' })).toMatch(/^youtube\/collections\/learning--[0-9a-f]{32}\.md$/);
+  expect(renderCollectionMarkdown({ collection, items: [named] })).toContain(`(${destination(named)})`);
 });
 
 it('links spaces and Unicode identities to the literal filesystem path', () => {
@@ -70,7 +83,7 @@ it.each([
   ['CON', '%43%4F%4E'], ['name.', 'name%2E'], ['name ', 'name%20'],
 ])('preserves Windows-safe identity encoding for collection source/ID %s', (value, encoded) => {
   expect(buildObsidianCollectionRelativePath({ ...collection, source: value, sourceId: value }))
-    .toBe(`${encoded}/collections/${encoded}.md`);
+    .toMatch(new RegExp(`^${encoded}/collections/learning--[0-9a-f]{32}\\.md$`));
 });
 
 it('keeps case-distinct collection identities in distinct literal paths', () => {

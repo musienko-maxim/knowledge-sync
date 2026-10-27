@@ -1,6 +1,7 @@
 import type { KnowledgeItem } from '../core/models/knowledge-item.js';
 import { quoteYamlString } from './yaml-string.js';
-import { escapeFacebookText, facebookOwnershipPrefix } from './obsidian/facebook-safety.js';
+import { escapeFacebookText } from './obsidian/facebook-safety.js';
+import { sealGeneratedMarkdown } from './obsidian/generated-note.js';
 
 /** Pure rendering; Facebook text is literal, other sources retain legacy Markdown. */
 export function renderKnowledgeItemMarkdown(item: KnowledgeItem): string {
@@ -23,7 +24,6 @@ export function renderKnowledgeItemMarkdown(item: KnowledgeItem): string {
   const body = description === undefined
     ? `# ${title}\n`
     : `# ${title}\n\n${description}`;
-  const prefix = facebook ? facebookOwnershipPrefix('item', item) : '---\n';
-  const document = `${prefix}${metadata}\n---\n\n${body}`;
-  return document.endsWith('\n') ? document : `${document}\n`;
+  const document = `---\n${metadata}\n---\n\n${body}`;
+  return sealGeneratedMarkdown('item', item, document.endsWith('\n') ? document : `${document}\n`);
 }

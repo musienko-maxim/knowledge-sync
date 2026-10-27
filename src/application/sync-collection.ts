@@ -4,7 +4,7 @@ import type { Storage } from '../storage/storage.js';
 import { sync, type SyncResult } from './sync.js';
 
 export type CollectionSyncRepositories = Pick<Storage,
-  'knowledgeItems' | 'collections' | 'collectionMemberships'>;
+  'knowledgeItems' | 'collections' | 'collectionMemberships'> & Partial<Pick<Storage, 'readSnapshot'>>;
 
 export interface CollectionSyncResult extends SyncResult {
   /** Stale relationships removed after this collection was successfully persisted. */

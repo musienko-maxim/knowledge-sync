@@ -3,6 +3,7 @@ import { importFacebook } from '../src/application/import-facebook.js';
 import { parseFacebookImport } from '../src/collectors/facebook/import.js';
 import type { CollectionSyncRepositories } from '../src/application/sync-collection.js';
 import * as projection from '../src/outputs/obsidian/export-projection.js';
+import { ExportPlanError } from '../src/outputs/obsidian/export-plan.js';
 
 const saved = (url: string, title?: string, description?: string) => ({ dict: [
   { label: 'URL-адреса', value: url },
@@ -149,6 +150,17 @@ it('converts unexpected export exceptions to a safe failure without losing persi
   const result = await importFacebook(input(), repositories(), 'fake-vault');
   expect(result.failure).toEqual({ stage: 'export', code: 'EXPORT_FAILED' });
   expect(result.export).toEqual({ status: 'failed' });
+  expect(result.items.processed).toBe(2);
+  expect(JSON.stringify(result)).not.toContain('private');
+});
+
+it.each(['PATH_COLLISION', 'SUFFIX_COLLISION'] as const)('retains only the safe %s code and indexes from plan exceptions', async (code) => {
+  const error = new ExportPlanError(code, 0, 3);
+  error.message = 'private title https://private.test/secret';
+  error.cause = { sourceId: 'private identity' };
+  vi.spyOn(projection, 'exportObsidianProjection').mockRejectedValue(error);
+  const result = await importFacebook(input(), repositories(), 'fake-vault');
+  expect(result.export).toEqual({ status: 'failed', planConflict: { code, firstIndex: 0, secondIndex: 3 } });
   expect(result.items.processed).toBe(2);
   expect(JSON.stringify(result)).not.toContain('private');
 });

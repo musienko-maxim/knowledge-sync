@@ -1,9 +1,31 @@
 import type { ObsidianExportFailure } from '../outputs/obsidian/export-notes.js';
 import type { ObsidianCollectionBatchExportResult } from '../outputs/obsidian/export-collections.js';
 import { OwnedNoteWriteError } from '../outputs/obsidian/write-owned-note.js';
+import { GeneratedNoteError } from '../outputs/obsidian/generated-note.js';
+import { ExportPathError } from '../outputs/obsidian/safe-path.js';
+import { ExportPreflightError, type PreflightConflict } from '../outputs/obsidian/preflight.js';
+import { ExportPlanError } from '../outputs/obsidian/export-plan.js';
+
+export function formatObsidianPreflightConflicts(conflicts: readonly PreflightConflict[]): string {
+  return conflicts.map((conflict) =>
+    `Export conflict: kind=${conflict.kind} index=${conflict.index} code=${conflict.code}. Existing files retained.\n`).join('');
+}
+
+/** A typed setup error is safe to report; arbitrary errors remain private. */
+export function formatObsidianPreflightFailure(error: unknown): string | undefined {
+  if (error instanceof ExportPreflightError) return formatObsidianPreflightConflicts(error.conflicts);
+  if (error instanceof ExportPathError) return `Export preflight refused: ${error.code}. Existing files retained.\n`;
+  if (error instanceof ExportPlanError) {
+    return `Export plan refused: ${error.code} at entries ${error.firstIndex} and ${error.secondIndex}.\n`;
+  }
+  return undefined;
+}
 
 // Public diagnostics are fixed text; raw messages, paths, causes, and objects may contain secrets.
 function reason(error: unknown): string {
+  if (error instanceof GeneratedNoteError || error instanceof ExportPathError) {
+    return `Destination refused (${error.code}); existing files are retained.`;
+  }
   if (error instanceof OwnedNoteWriteError) {
     switch (error.reason) {
       case 'unowned-target': return 'Destination ownership does not match (unowned-target).';

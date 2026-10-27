@@ -9,6 +9,7 @@ import { importedItems } from './schema.js';
 import { createKnowledgeItemRepository } from './knowledge-item-repository.js';
 import { createCollectionRepository } from './collection-repository.js';
 import { createCollectionMembershipRepository } from './collection-membership-repository.js';
+import { readSqliteSnapshot } from './read-snapshot.js';
 
 /** Use a database path outside the vault for normalized items and import state. */
 export function openStorage(databasePath: string): Storage {
@@ -53,6 +54,7 @@ export function openStorage(databasePath: string): Storage {
     )`);
     const db = drizzle(sqlite);
     return {
+      readSnapshot: () => readSqliteSnapshot(sqlite),
       knowledgeItems: createKnowledgeItemRepository(db),
       collections: createCollectionRepository(db),
       collectionMemberships: createCollectionMembershipRepository(db),

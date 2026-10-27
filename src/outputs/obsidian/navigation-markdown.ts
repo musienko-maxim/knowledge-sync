@@ -5,6 +5,12 @@ import { buildObsidianRelativePath } from './note-path.js';
 import { escapeFacebookText } from './facebook-safety.js';
 
 export const NAVIGATION_MARKER = '<!-- knowledge-sync:generated-navigation:v1 -->';
+export const NAVIGATION_FILENAME = 'Knowledge Sync.md';
+
+export interface NavigationDestinations {
+  readonly itemPath: (entry: ObsidianProjectionSnapshot['items'][number]) => string;
+  readonly collectionPath: (entry: ObsidianProjectionSnapshot['collections'][number]) => string;
+}
 
 interface NavigationEntry {
   readonly title: string;
@@ -54,10 +60,10 @@ function renderSection<T extends NavigationEntry>(
 }
 
 /** Pure navigation for an already validated snapshot, independent of membership counts. */
-export function renderNavigationMarkdown(snapshot: ObsidianProjectionSnapshot): string {
+export function renderNavigationMarkdown(snapshot: ObsidianProjectionSnapshot, destinations?: NavigationDestinations): string {
   const collections = renderSection(snapshot.collections, 'Untitled collection', '_No collections._',
-    buildObsidianCollectionRelativePath);
-  const items = renderSection(snapshot.items, 'Untitled item', '_No items._', buildObsidianRelativePath);
+    destinations?.collectionPath ?? buildObsidianCollectionRelativePath);
+  const items = renderSection(snapshot.items, 'Untitled item', '_No items._', destinations?.itemPath ?? buildObsidianRelativePath);
   return `${NAVIGATION_MARKER}\n# Knowledge Sync\n\n`
     + 'Generated from persisted knowledge. Entries may include retained items and collections.\n\n'
     + `## Collections\n\n${collections}\n\n## All items\n\n${items}\n`;

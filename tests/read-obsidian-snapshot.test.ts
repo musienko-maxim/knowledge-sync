@@ -23,6 +23,24 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+it('uses the storage-owned snapshot instead of independent repository reads', async () => {
+  const repositories = setup();
+  const snapshot = { items, collections, memberships };
+  const readSnapshot = vi.fn(() => snapshot);
+  expect(await readObsidianSnapshot({ ...repositories, readSnapshot })).toBe(snapshot);
+  expect(readSnapshot).toHaveBeenCalledExactlyOnceWith();
+  expect(repositories.knowledgeItems.listAll).not.toHaveBeenCalled();
+  expect(repositories.collections.listAll).not.toHaveBeenCalled();
+  expect(repositories.collectionMemberships.listAll).not.toHaveBeenCalled();
+});
+
+it('propagates transaction failures without falling back to inconsistent reads', async () => {
+  const repositories = setup();
+  const failure = new Error('snapshot failure');
+  await expect(readObsidianSnapshot({ ...repositories, readSnapshot: () => { throw failure; } })).rejects.toBe(failure);
+  expect(repositories.knowledgeItems.listAll).not.toHaveBeenCalled();
+});
+
 it('awaits each ordered repository read before returning their original readonly arrays', async () => {
   const repositories = setup();
   const itemRead = deferred<readonly KnowledgeItem[]>();

@@ -1,7 +1,10 @@
 import type { KnowledgeCollection } from '../../core/models/knowledge-collection.js';
 import { encodeObsidianPathComponent } from './note-path.js';
+import { assertWindowsPathComponent, buildReadableFilename, type PathSuffix } from './readable-path.js';
 
-/** Stable collection namespace using the unchanged persistent identity encoding. */
-export function buildObsidianCollectionRelativePath(collection: KnowledgeCollection): string {
-  return `${encodeObsidianPathComponent(collection.source, 'source')}/collections/${encodeObsidianPathComponent(collection.sourceId, 'sourceId')}.md`;
+/** Collection namespace retains source encoding while the basename follows its title. */
+export function buildObsidianCollectionRelativePath(collection: KnowledgeCollection, suffixForIdentity?: PathSuffix): string {
+  const directory = encodeObsidianPathComponent(collection.source, 'source');
+  assertWindowsPathComponent(directory);
+  return `${directory}/collections/${buildReadableFilename('collection', collection, suffixForIdentity)}`;
 }

@@ -4,13 +4,14 @@ import { GoogleAuthError } from '../auth/google-client-config.js';
 import { YouTubeError } from '../collectors/youtube/youtube-error.js';
 import { youtubeCommands, type YouTubeCommands } from './youtube.js';
 import { SyncCommandError, type YouTubeSyncOptions, type YouTubeSyncObsidianOptions } from './youtube-sync.js';
-import { formatObsidianExportFailure } from './obsidian-export-failure.js';
+import { formatObsidianExportFailure, formatObsidianPreflightFailure } from './obsidian-export-failure.js';
 import type { YouTubeSyncAllOptions } from './youtube-sync-all.js';
 import type { AccountSyncResult } from '../application/sync-account.js';
 import { formatAccountSyncResult } from './account-sync-output.js';
 import { formatCollectionExportOutcome } from './collection-export-output.js';
 import { formatNavigationExportOutcome } from './navigation-export-output.js';
 import { addFacebookCommands } from './facebook.js';
+import { addObsidianExportCommands, STALE_OUTPUT_WARNING } from './obsidian-export.js';
 
 export function createProgram(commands: YouTubeCommands = youtubeCommands): Command {
   const program = new Command()
@@ -21,6 +22,14 @@ export function createProgram(commands: YouTubeCommands = youtubeCommands): Comm
   const auth = youtube.command('auth').description('Manage local Google OAuth authorization');
   const write = (text: string) => program.configureOutput().writeOut?.(text + '\n');
   const fail = (error: unknown): void => {
+    const preflight = formatObsidianPreflightFailure(error);
+    if (preflight) {
+      write(STALE_OUTPUT_WARNING);
+      write('Items: skipped (preflight conflict)\nCollections: skipped (preflight conflict)\nNavigation: skipped (preflight conflict)');
+      program.configureOutput().writeErr?.(preflight);
+      return program.error('Obsidian export incomplete; successful SQLite writes remain committed.',
+        { exitCode: 1, code: 'knowledge-sync.obsidian-export' });
+    }
     const safe = error instanceof GoogleAuthError || error instanceof YouTubeError || error instanceof SyncCommandError;
     program.error(safe ? error.message : 'YouTube command failed. Check configuration and try again.',
       { exitCode: 1, code: 'knowledge-sync.youtube' });
@@ -63,6 +72,7 @@ export function createProgram(commands: YouTubeCommands = youtubeCommands): Comm
       try { result = await commands.syncObsidian(playlist, options); } catch (error) { return fail(error); }
       write(`Sync: processed=${result.sync.processed} new=${result.sync.new} changed=${result.sync.changed} unchanged=${result.sync.unchanged}`);
       write(`Memberships: removed=${result.sync.membershipsRemoved}`);
+      write(STALE_OUTPUT_WARNING);
       write(`Export: attempted=${result.export.processed} succeeded=${result.export.succeeded} failed=${result.export.failed}`);
       for (const failure of result.export.failures) {
         program.configureOutput().writeErr?.(formatObsidianExportFailure(failure) + '\n');
@@ -95,5 +105,6 @@ export function createProgram(commands: YouTubeCommands = youtubeCommands): Comm
       }
     });
   addFacebookCommands(program);
+  addObsidianExportCommands(program);
   return program;
 }

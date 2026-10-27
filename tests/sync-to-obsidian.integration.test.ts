@@ -84,16 +84,15 @@ it('exports one final persisted value per identity even when sync processes dupl
   expect(await store.knowledgeItems.listAll()).toStrictEqual([last, other]);
 });
 
-it('recovers a failed export on a later unchanged sync after reopening the persisted database', async () => {
+it('recovers after a global preflight refusal on a later unchanged sync after reopening the database', async () => {
   const other = { ...item, sourceId: 'b' };
-  // An empty directory at the note destination makes a real write fail on all platforms.
+  // An empty directory at a planned note destination blocks the entire batch before writes.
   await mkdir(notePath(item), { recursive: true });
-  const first = await syncToObsidian(collector([item, other]), store.knowledgeItems, vault);
-  expect(first.sync).toEqual({ processed: 2, new: 2, changed: 0, unchanged: 0 });
-  expect(first.export).toMatchObject({ processed: 2, succeeded: 1, failed: 1 });
-  expect(first.export.failures[0]).toMatchObject({ index: 0, item });
-  expect(first.export.failures[0]!.error).toBeInstanceOf(Error);
-  expect(await readFile(notePath(other), 'utf8')).toBe(renderKnowledgeItemMarkdown(other));
+  await expect(syncToObsidian(collector([item, other]), store.knowledgeItems, vault)).rejects.toMatchObject({
+    conflicts: [{ index: 0, kind: 'item', code: 'unsafe-path' }],
+  });
+  expect(await store.knowledgeItems.listAll()).toEqual([item, other]);
+  await expect(readFile(notePath(other))).rejects.toMatchObject({ code: 'ENOENT' });
 
   store.close();
   store = openStorage(database);

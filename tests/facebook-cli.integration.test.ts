@@ -9,6 +9,7 @@ import { Command as Commander } from 'commander';
 import { openStorage } from '../src/storage/sqlite/storage.js';
 import { buildObsidianRelativePath } from '../src/outputs/obsidian/note-path.js';
 import { buildObsidianCollectionRelativePath } from '../src/outputs/obsidian/collection-path.js';
+import * as exportPlan from '../src/outputs/obsidian/export-plan.js';
 
 let directory: string;
 let database: string;
@@ -100,6 +101,7 @@ it('keeps file collision protection and private diagnostic redaction across Face
   const itemPath = join(vault, buildObsidianRelativePath(item));
   const collectionPath = join(vault, buildObsidianCollectionRelativePath(before.collections[0]!));
   const generated = await readFile(itemPath, 'utf8');
+  const originalNavigation = await readFile(join(vault, 'Knowledge Sync.md'), 'utf8');
   await writeFile(itemPath, 'Personal note: do not replace\n');
   await writeFile(collectionPath, 'Personal collection: do not replace\n');
   vi.mocked(fetch).mockImplementation(async (input) => {
@@ -114,13 +116,18 @@ it('keeps file collision protection and private diagnostic redaction across Face
   for (const command of [youtube, reimport]) {
     const diagnostic = command.stdout() + command.stderr();
     for (const value of [privateUrl, privateTitle, privateCollection, fbid, item.sourceId, vault]) expect(diagnostic).not.toContain(value);
-    expect(diagnostic).toContain('failed=1');
+    expect(diagnostic).toContain('Export conflict: kind=item');
+    expect(diagnostic).toContain('Export conflict: kind=collection');
+    expect(diagnostic).toContain('Items: skipped (preflight conflict)');
+    expect(diagnostic).toContain('Navigation: skipped (preflight conflict)');
   }
   expect(await readFile(itemPath, 'utf8')).toBe('Personal note: do not replace\n');
   expect(await readFile(collectionPath, 'utf8')).toBe('Personal collection: do not replace\n');
   const navigation = await readFile(join(vault, 'Knowledge Sync.md'), 'utf8');
+  expect(navigation).toBe(originalNavigation);
   expect(navigation).toContain(privateTitle);
-  expect(navigation).toContain('YouTube item');
+  expect(navigation).not.toContain('YouTube item');
+  expect(await readdir(vault)).not.toContain('youtube');
   const after = await snapshot();
   expect(after.items).toHaveLength(2);
   expect(after.collections).toHaveLength(2);
@@ -183,4 +190,23 @@ it('never discloses unexpected import exception messages', async () => {
   expect(command.stderr()).toContain('Facebook import failed. Check input');
   expect(command.stderr()).not.toContain(privateUrl);
   expect(command.stderr()).not.toContain(privateTitle);
+});
+
+it.each(['SUFFIX_COLLISION', 'PATH_COLLISION'])('retains safe %s details and skips all publication', async (code) => {
+  if (code === 'PATH_COLLISION') await writeFile(file, JSON.stringify([collection(fbid, privateCollection, [
+    ...collection().label_values[1]!.dict!,
+    { dict: [{ label: 'URL-адреса', value: privateUrl + '-other' }, { label: 'Назва', value: privateTitle }] },
+  ])]));
+  const build = exportPlan.buildObsidianExportPlan;
+  vi.spyOn(exportPlan, 'buildObsidianExportPlan').mockImplementation((snapshot) =>
+    build(snapshot, { suffixForIdentity: () => '0'.repeat(32) }));
+  const command = cli();
+  await expect(command.run(args(true))).rejects.toMatchObject({ exitCode: 1 });
+  expect(command.stderr()).toContain(`Export plan refused: ${code} at entries 0 and 1.`);
+  expect(command.stdout()).toContain('Items: skipped (plan conflict)\nCollections: skipped (plan conflict)\nNavigation: skipped (plan conflict)');
+  for (const value of [privateUrl, privateTitle, privateCollection, fbid, vault]) {
+    expect(command.stdout() + command.stderr()).not.toContain(value);
+  }
+  expect(await readdir(vault)).toEqual([]);
+  expect((await snapshot()).items).toHaveLength(code === 'PATH_COLLISION' ? 2 : 1);
 });

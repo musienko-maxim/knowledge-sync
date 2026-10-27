@@ -4,7 +4,7 @@ import type { KnowledgeItem } from '../../core/models/knowledge-item.js';
 import type { KnowledgeItemRepository } from '../knowledge-item-repository.js';
 import { knowledgeItems } from './schema.js';
 
-function toKnowledgeItem(row: typeof knowledgeItems.$inferSelect): KnowledgeItem {
+export function toKnowledgeItem(row: typeof knowledgeItems.$inferSelect): KnowledgeItem {
   return {
     source: row.source,
     sourceId: row.sourceId,

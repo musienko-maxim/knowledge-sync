@@ -7,6 +7,8 @@ import {
 } from '../collectors/facebook/import.js';
 import type { KnowledgeItem } from '../core/models/knowledge-item.js';
 import { exportObsidianProjection, type ObsidianProjectionExportResult } from '../outputs/obsidian/export-projection.js';
+import { ExportPreflightError, type PreflightConflict } from '../outputs/obsidian/preflight.js';
+import { ExportPlanError } from '../outputs/obsidian/export-plan.js';
 import { readObsidianSnapshot } from './read-obsidian-snapshot.js';
 import type { CollectionSyncRepositories } from './sync-collection.js';
 
@@ -29,7 +31,9 @@ export interface FacebookImportResult {
   warnings: { code: FacebookConflictCode; count: number }[];
   failure?: { stage: FacebookImportStage; code: FacebookImportFailureCode };
   export:
-    | { status: 'not-requested' | 'skipped' | 'failed' }
+    | { status: 'not-requested' | 'skipped' }
+    | { status: 'failed'; conflicts?: readonly PreflightConflict[];
+      planConflict?: Readonly<Pick<ExportPlanError, 'code' | 'firstIndex' | 'secondIndex'>> }
     | { status: 'completed'; result: ObsidianProjectionExportResult };
 }
 
@@ -124,9 +128,13 @@ export async function importFacebook(
       stage = 'export';
       result.export = { status: 'completed', result: await exportObsidianProjection(vaultPath, snapshot) };
     }
-  } catch {
+  } catch (error) {
     result.failure = { stage, code: stage === 'export' ? 'EXPORT_FAILED' : 'STORAGE_FAILED' };
-    if (stage === 'export') result.export = { status: 'failed' };
+    if (stage === 'export') result.export = error instanceof ExportPreflightError
+      ? { status: 'failed', conflicts: error.conflicts }
+      : error instanceof ExportPlanError
+        ? { status: 'failed', planConflict: { code: error.code, firstIndex: error.firstIndex, secondIndex: error.secondIndex } }
+        : { status: 'failed' };
   }
   return result;
 }

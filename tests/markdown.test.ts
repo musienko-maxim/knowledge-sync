@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { KnowledgeItem } from '../src/core/models/knowledge-item.js';
-import { renderKnowledgeItemMarkdown } from '../src/outputs/markdown.js';
+import { renderKnowledgeItemMarkdown as renderSealedItem } from '../src/outputs/markdown.js';
+import { verifyGeneratedNote } from '../src/outputs/obsidian/generated-note.js';
+
+// Check ownership on every fixture, then compare the independent content contract.
+function renderKnowledgeItemMarkdown(item: KnowledgeItem): string {
+  const markdown = renderSealedItem(item);
+  verifyGeneratedNote(Buffer.from(markdown, 'utf8'), 'item', item);
+  return markdown.replace(/^---\nknowledge_sync: [^\n]+\nknowledge_sync_identity: [^\n]+\nknowledge_sync_sha256: [^\n]+\n/, '---\n');
+}
 
 const item: KnowledgeItem = {
   source: 'example', sourceId: 'item-123', url: 'https://example.com/123', title: 'A note',
@@ -76,8 +84,8 @@ describe('renderKnowledgeItemMarkdown', () => {
     ['Text\r', '# A note\n\nText\r\n'],
     ['  **bold**\n\n[link](https://example.com)  ', '# A note\n\n  **bold**\n\n[link](https://example.com)  \n'],
     ['\n\n', '# A note\n\n\n\n'],
-  ])('preserves description %j and applies the final-newline rule', (description, body) => {
-    expect(renderKnowledgeItemMarkdown({ ...item, description })).toBe(frontMatter + body);
+  ])('preserves description %j with canonical LF and the final-newline rule', (description, body) => {
+    expect(renderKnowledgeItemMarkdown({ ...item, description })).toBe(frontMatter + body.replace(/\r\n?/g, '\n'));
   });
 
   it('distinguishes absent description from an explicit empty string', () => {
@@ -91,9 +99,9 @@ describe('renderKnowledgeItemMarkdown', () => {
     ['First\r\nSecond', '"First\\r\\nSecond"'],
     ['  padded title  ', '"  padded title  "'],
     ['Title\n\n', '"Title\\n\\n"'],
-  ])('keeps title %j verbatim after the heading prefix', (title, quoted) => {
+  ])('keeps title %j after the heading prefix with canonical LF', (title, quoted) => {
     expect(renderKnowledgeItemMarkdown({ ...item, title }))
-      .toBe(frontMatter.replace('title: "A note"', `title: ${quoted}`) + `# ${title}\n`);
+      .toBe(frontMatter.replace('title: "A note"', `title: ${quoted}`) + `# ${title.replace(/\r\n?/g, '\n')}\n`);
   });
 
   it('does not reparse or trim supplied identity strings', () => {
@@ -104,7 +112,7 @@ describe('renderKnowledgeItemMarkdown', () => {
   it('uses LF for generated separators even when title and description contain CRLF', () => {
     expect(renderKnowledgeItemMarkdown({ ...item, title: 'A\r\nB', description: 'C\r\nD' }))
       .toBe('---\nsource: "example"\nsourceId: "item-123"\nurl: "https://example.com/123"\n'
-        + 'title: "A\\r\\nB"\n---\n\n# A\r\nB\n\nC\r\nD\n');
+        + 'title: "A\\r\\nB"\n---\n\n# A\nB\n\nC\nD\n');
   });
 
   it('is deterministic and does not mutate a frozen input', () => {
