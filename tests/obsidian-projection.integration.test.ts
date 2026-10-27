@@ -1,149 +1,125 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile, rename } from 'node:fs/promises';
+import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
-import { afterEach, beforeEach, expect, it } from 'vitest';
-import { renderKnowledgeItemMarkdown } from '../src/outputs/markdown.js';
-import { buildObsidianCollectionRelativePath } from '../src/outputs/obsidian/collection-path.js';
-import type { ObsidianProjectionSnapshot } from '../src/outputs/obsidian/collection-projection.js';
+import { basename, dirname, join, posix, resolve } from 'node:path';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { buildObsidianExportPlan } from '../src/outputs/obsidian/export-plan.js';
 import { exportObsidianProjection } from '../src/outputs/obsidian/export-projection.js';
-import { buildObsidianRelativePath } from '../src/outputs/obsidian/note-path.js';
-import { renderCollectionMarkdown } from '../src/outputs/obsidian/collection-markdown.js';
-import { NAVIGATION_MARKER } from '../src/outputs/obsidian/navigation-markdown.js';
-import { NAVIGATION_FILENAME, NavigationWriteError } from '../src/outputs/obsidian/write-navigation.js';
+import { encodeMarkdownDestination } from '../src/outputs/obsidian/markdown-link.js';
 
+vi.mock('node:fs/promises', async (original) => {
+  const actual = await original<typeof import('node:fs/promises')>();
+  return { ...actual, rename: vi.fn(actual.rename) };
+});
 let directory: string;
 let vault: string;
-const item = { source: 'example', sourceId: 'X', title: 'Привіт [X]', url: 'https://example.com/X' };
-const otherItem = { ...item, sourceId: 'collections', title: 'Other' };
-const a = { source: 'example', sourceId: 'A', title: 'Collection A' };
-const b = { ...a, sourceId: 'B', title: 'Collection B' };
-const snapshot: ObsidianProjectionSnapshot = {
-  items: [item, otherItem], collections: [a, b], memberships: [
-    { source: 'example', collectionSourceId: 'A', itemSourceId: 'X' },
-    { source: 'example', collectionSourceId: 'B', itemSourceId: 'X' },
-    { source: 'example', collectionSourceId: 'B', itemSourceId: 'collections' },
-  ],
-};
+const item = { source: 'youtube', sourceId: 'X', title: 'Привіт [X]', url: 'https://example.com/X' };
+const other = { source: 'facebook', sourceId: 'url-v1-fixture', title: 'Another item', url: 'https://example.com/other' };
+const collection = { source: 'youtube', sourceId: 'A', title: 'Learning' };
+const snapshot = { items: [item, other], collections: [collection], memberships: [
+  { source: 'youtube', collectionSourceId: 'A', itemSourceId: 'X' },
+] };
 
 beforeEach(async () => {
-  directory = await mkdtemp(join(tmpdir(), 'knowledge-sync-projection-'));
-  vault = join(directory, 'vault');
-  await mkdir(vault);
+  vi.clearAllMocks();
+  directory = await fs.mkdtemp(join(tmpdir(), 'ks-projection-'));
+  vault = join(directory, 'vault'); await fs.mkdir(vault);
 });
 afterEach(async () => {
-  const cleanup = resolve(directory);
-  if (dirname(cleanup) !== resolve(tmpdir()) || !basename(cleanup).startsWith('knowledge-sync-projection-')) {
-    throw new Error('Unexpected projection-test cleanup path.');
-  }
-  await rm(cleanup, { recursive: true, force: true });
+  vi.restoreAllMocks();
+  if (dirname(resolve(directory)) !== resolve(tmpdir()) || !basename(directory).startsWith('ks-projection-')) throw new Error('Invalid cleanup');
+  await fs.rm(directory, { recursive: true, force: true });
 });
 
-it('writes one shared item and collection links, preserves item bytes and repeats identical output', async () => {
+it('publishes mixed-source notes and resolvable links, then repeats byte-identical output without rewriting', async () => {
+  const plan = buildObsidianExportPlan(snapshot);
   const result = await exportObsidianProjection(vault, snapshot);
-  expect(result.items).toMatchObject({ processed: 2, succeeded: 2, failed: 0 });
-  expect(result.collections).toMatchObject({ status: 'completed', result: { processed: 2, succeeded: 2, failed: 0 } });
+  expect(result.items).toMatchObject({ succeeded: 2, failed: 0 });
+  expect(result.collections).toMatchObject({ status: 'completed', result: { succeeded: 1, failed: 0 } });
   expect(result.navigation).toEqual({ status: 'completed' });
-  const paths = [buildObsidianRelativePath(item), buildObsidianRelativePath(otherItem),
-    buildObsidianCollectionRelativePath(a), buildObsidianCollectionRelativePath(b), NAVIGATION_FILENAME];
-  const first = await Promise.all(paths.map((path) => readFile(join(vault, path))));
-  expect(first[0]).toEqual(Buffer.from(renderKnowledgeItemMarkdown(item), 'utf8'));
-  expect(first[2]!.toString('utf8')).toContain('- [Привіт \\[X\\]](../%2558.md)');
-  expect(first[3]!.toString('utf8')).toContain('(../collections.md)');
-  expect(first[2]).toEqual(Buffer.from(renderCollectionMarkdown({ collection: a, items: [item] })));
-  expect(first[3]).toEqual(Buffer.from(renderCollectionMarkdown({ collection: b, items: [item, otherItem] })));
-  const navigation = first[4]!.toString('utf8');
-  expect(navigation.startsWith(`${NAVIGATION_MARKER}\n# Knowledge Sync\n`)).toBe(true);
-  expect(navigation.match(/\]\(example\/%2558.md\)/g)).toHaveLength(1);
-  expect(navigation).toContain('](example/collections/%2541.md)');
-  expect(navigation).toContain('](example/collections/%2542.md)');
-  expect(await readdir(join(vault, 'example'))).toEqual(['%58.md', 'collections', 'collections.md']);
-  await exportObsidianProjection(vault, { items: [...snapshot.items].reverse(),
-    collections: [...snapshot.collections].reverse(), memberships: [...snapshot.memberships].reverse() });
-  expect(await Promise.all(paths.map((path) => readFile(join(vault, path))))).toEqual(first);
-  await exportObsidianProjection(vault, { ...snapshot, collections: [{ ...a, title: 'Renamed' }, b] });
-  expect(await readFile(join(vault, paths[2]!), 'utf8')).toContain('# Renamed\n');
-  expect(await readdir(join(vault, 'example', 'collections'))).toEqual(['%41.md', '%42.md']);
-});
-
-it('exports collection-only snapshots, fails missing vaults, and keeps an entirely empty projection a no-op', async () => {
-  const only = { items: [], collections: [a], memberships: [] };
-  const result = await exportObsidianProjection(vault, only);
-  expect(result.items.processed).toBe(0);
-  expect(result.collections).toMatchObject({ status: 'completed', result: { succeeded: 1 } });
-  expect(result.navigation).toEqual({ status: 'completed' });
-  expect(await readFile(join(vault, NAVIGATION_FILENAME), 'utf8')).toContain('## All items\n\n_No items._\n');
-  expect(await readFile(join(vault, buildObsidianCollectionRelativePath(a)), 'utf8')).toContain('_No items._\n');
-  const missing = join(directory, 'missing');
-  expect((await exportObsidianProjection(missing, only)).collections)
-    .toMatchObject({ status: 'completed', result: { processed: 1, failed: 1 } });
-  expect(await exportObsidianProjection(missing, { items: [], collections: [], memberships: [] })).toEqual({
-    items: { processed: 0, succeeded: 0, failed: 0, failures: [] },
-    collections: { status: 'completed', result: { processed: 0, succeeded: 0, failed: 0, failures: [] } },
-    navigation: { status: 'skipped', reason: 'empty-snapshot' },
-  });
-  expect(await readdir(directory)).toEqual(['vault']);
-});
-
-it.each(['item', 'collection'] as const)('recovers after a partial %s write failure without suppressing later writes', async (phase) => {
-  const blockedPath = join(vault, phase === 'item' ? buildObsidianRelativePath(item) : buildObsidianCollectionRelativePath(a));
-  await mkdir(blockedPath, { recursive: true });
-  const partial = await exportObsidianProjection(vault, snapshot);
-  expect(partial.items.failed).toBe(phase === 'item' ? 1 : 0);
-  expect(partial.collections).toMatchObject({ status: 'completed', result: { failed: phase === 'collection' ? 1 : 0 } });
-  expect(partial.navigation).toEqual({ status: 'completed' });
-  expect(await readFile(join(vault, NAVIGATION_FILENAME), 'utf8')).toContain('](example/%2558.md)');
-  // Later items and collections still reach disk regardless of the earlier failure.
-  expect(await readFile(join(vault, buildObsidianRelativePath(otherItem)), 'utf8')).toBe(renderKnowledgeItemMarkdown(otherItem));
-  expect(await readFile(join(vault, buildObsidianCollectionRelativePath(b)), 'utf8')).toContain('# Collection B');
-  const resolvedBlock = resolve(blockedPath);
-  if (!resolvedBlock.startsWith(`${resolve(vault)}${process.platform === 'win32' ? '\\' : '/'}`)) {
-    throw new Error('Unexpected blocked output path.');
+  const entries = [...plan.items, ...plan.collections, plan.navigation!];
+  for (const entry of entries) {
+    const bytes = await fs.readFile(join(vault, entry.relativePath), 'utf8');
+    expect(bytes).toBe(entry.markdown);
+    for (const match of bytes.matchAll(/\]\(([^)]+)\)/g)) {
+      const destination = posix.join(posix.dirname(entry.relativePath), decodeURIComponent(match[1]!));
+      expect(entries.some((entry) => entry.relativePath === destination)).toBe(true);
+      await expect(fs.stat(join(vault, destination))).resolves.toBeDefined();
+    }
   }
-  await rm(resolvedBlock, { recursive: true });
-  const recovered = await exportObsidianProjection(vault, snapshot);
-  expect(recovered.items.failed).toBe(0);
-  expect(recovered.collections).toMatchObject({ status: 'completed', result: { failed: 0, succeeded: 2 } });
-  expect(await readFile(resolvedBlock, 'utf8')).toContain(phase === 'item' ? '# Привіт [X]' : '# Collection A');
+  const before = await Promise.all(entries.map(async ({ relativePath }) => ({
+    bytes: await fs.readFile(join(vault, relativePath)), mtime: (await fs.stat(join(vault, relativePath))).mtimeMs,
+  })));
+  vi.mocked(fs.rename).mockClear();
+  await exportObsidianProjection(vault, { ...snapshot, items: [...snapshot.items].reverse() });
+  expect(fs.rename).not.toHaveBeenCalled();
+  expect(await Promise.all(entries.map(async ({ relativePath }) => ({
+    bytes: await fs.readFile(join(vault, relativePath)), mtime: (await fs.stat(join(vault, relativePath))).mtimeMs,
+  })))).toEqual(before);
 });
 
-it('rejects malformed relationships without writing any files', async () => {
-  await expect(exportObsidianProjection(vault, { ...snapshot, memberships: [...snapshot.memberships, {
-    source: 'example', collectionSourceId: 'A', itemSourceId: 'missing',
-  }] })).rejects.toThrow('missing item');
-  expect(await readdir(vault)).toEqual([]);
-});
-
-it('includes retained unassociated items and supports item-only snapshots', async () => {
-  const detached = { ...snapshot, memberships: snapshot.memberships.filter((edge) => edge.itemSourceId !== 'collections') };
-  expect((await exportObsidianProjection(vault, detached)).navigation).toEqual({ status: 'completed' });
-  expect(await readFile(join(vault, NAVIGATION_FILENAME), 'utf8')).toContain('- [Other](example/collections.md)');
-  const only = { items: [otherItem], collections: [], memberships: [] };
-  expect((await exportObsidianProjection(vault, only)).navigation).toEqual({ status: 'completed' });
-  const markdown = await readFile(join(vault, NAVIGATION_FILENAME), 'utf8');
-  expect(markdown).toContain('## Collections\n\n_No collections._\n');
-  expect(markdown).toContain('## All items\n\n- [Other](example/collections.md)\n');
-});
-
-it('preserves user-owned navigation, retains successful note results, and recovers on a later export', async () => {
-  const target = join(vault, NAVIGATION_FILENAME);
-  const userContent = 'My own notes\r\nLeave these intact.';
-  await writeFile(target, userContent);
-  const failed = await exportObsidianProjection(vault, snapshot);
-  expect(failed.items).toMatchObject({ succeeded: 2, failed: 0 });
-  expect(failed.collections).toMatchObject({ status: 'completed', result: { succeeded: 2, failed: 0 } });
-  expect(failed.navigation).toEqual({ status: 'failed', stage: 'write', error: new NavigationWriteError('unowned-target') });
-  expect(await readFile(target, 'utf8')).toBe(userContent);
-  await rename(target, join(vault, 'My notes.md'));
-  expect((await exportObsidianProjection(vault, snapshot)).navigation).toEqual({ status: 'completed' });
-  expect(await readFile(target, 'utf8')).toContain(NAVIGATION_MARKER);
-  expect(await readFile(join(vault, 'My notes.md'), 'utf8')).toBe(userContent);
-});
-
-it('does not change an existing navigation page for a completely empty snapshot', async () => {
+it('renames via new destinations, updates generated links and retains historical bytes', async () => {
+  const original = buildObsidianExportPlan(snapshot);
   await exportObsidianProjection(vault, snapshot);
-  const target = join(vault, NAVIGATION_FILENAME);
-  const before = await readFile(target);
-  const result = await exportObsidianProjection(vault, { items: [], collections: [], memberships: [] });
-  expect(result.navigation).toEqual({ status: 'skipped', reason: 'empty-snapshot' });
-  expect(await readFile(target)).toEqual(before);
+  const changed = { ...snapshot, items: [{ ...item, title: 'Renamed video' }, other], collections: [{ ...collection, title: 'Renamed collection' }] };
+  const next = buildObsidianExportPlan(changed);
+  await exportObsidianProjection(vault, changed);
+  for (const entry of [...original.items, ...original.collections]) expect(await fs.readFile(join(vault, entry.relativePath), 'utf8')).toBe(entry.markdown);
+  const navigation = await fs.readFile(join(vault, next.navigation!.relativePath), 'utf8');
+  for (const entry of [...next.items, ...next.collections]) expect(navigation).toContain(`](${encodeMarkdownDestination(entry.relativePath)})`);
+  const newItem = next.items.find((entry) => entry.item.source === 'youtube')!;
+  expect(await fs.readFile(join(vault, next.collections[0]!.relativePath), 'utf8')).toContain(
+    `](${encodeMarkdownDestination(posix.relative(posix.dirname(next.collections[0]!.relativePath), newItem.relativePath))})`);
+});
+
+it.each(['item', 'collection'] as const)('suppresses dependent phases after a real %s rename failure and converges on retry', async (phase) => {
+  const plan = buildObsidianExportPlan(snapshot);
+  const actual = (await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')).rename;
+  let failed = false;
+  vi.mocked(fs.rename).mockImplementation(async (from, to) => {
+    const selected = phase === 'item' ? !String(to).includes('collections') : String(to).includes('collections');
+    if (!failed && selected) { failed = true; throw Object.assign(new Error('Injected failure'), { code: 'EIO' }); }
+    return actual(from, to);
+  });
+  const partial = await exportObsidianProjection(vault, snapshot);
+  expect(partial.navigation).toEqual({ status: 'skipped', reason: 'upstream-failure' });
+  if (phase === 'item') {
+    expect(partial.items.failed).toBe(1);
+    expect(partial.collections).toEqual({ status: 'skipped', reason: 'upstream-failure' });
+    await expect(fs.lstat(join(vault, plan.collections[0]!.relativePath))).rejects.toMatchObject({ code: 'ENOENT' });
+  } else {
+    expect(partial.items.failed).toBe(0);
+    expect(partial.collections).toMatchObject({ status: 'completed', result: { failed: 1 } });
+  }
+  await expect(fs.lstat(join(vault, 'Knowledge Sync.md'))).rejects.toMatchObject({ code: 'ENOENT' });
+  expect((await fs.readdir(vault, { recursive: true })).filter((path) => path.endsWith('.tmp'))).toEqual([]);
+  expect((await exportObsidianProjection(vault, snapshot)).navigation).toEqual({ status: 'completed' });
+  for (const entry of [...plan.items, ...plan.collections, plan.navigation!]) expect(await fs.readFile(join(vault, entry.relativePath), 'utf8')).toBe(entry.markdown);
+});
+
+it('preflights user-owned navigation before all note writes, then recovers after the user moves it', async () => {
+  const target = join(vault, 'Knowledge Sync.md');
+  await fs.writeFile(target, 'My own notes\r\nPreserve');
+  await expect(exportObsidianProjection(vault, snapshot)).rejects.toThrow('preflight');
+  expect(await fs.readdir(vault)).toEqual(['Knowledge Sync.md']);
+  expect(await fs.readFile(target, 'utf8')).toBe('My own notes\r\nPreserve');
+  await fs.rename(target, join(vault, 'Personal.md'));
+  expect((await exportObsidianProjection(vault, snapshot)).navigation).toEqual({ status: 'completed' });
+  expect(await fs.readFile(join(vault, 'Personal.md'), 'utf8')).toBe('My own notes\r\nPreserve');
+});
+
+it('exports collection-only data and keeps an empty snapshot a no-op even for a missing vault', async () => {
+  const result = await exportObsidianProjection(vault, { items: [], collections: [collection], memberships: [] });
+  expect(result.collections).toMatchObject({ status: 'completed', result: { succeeded: 1 } });
+  const target = join(vault, 'Knowledge Sync.md');
+  const before = await fs.readFile(target);
+  const empty = { items: [], collections: [], memberships: [] };
+  expect((await exportObsidianProjection(vault, empty)).navigation).toEqual({ status: 'skipped', reason: 'empty-snapshot' });
+  expect(await fs.readFile(target)).toEqual(before);
+  expect((await exportObsidianProjection(join(directory, 'missing'), empty)).items.processed).toBe(0);
+  await expect(exportObsidianProjection(join(directory, 'missing'), snapshot)).rejects.toThrow('missing-vault');
+});
+
+it('rejects dangling memberships before filesystem output', async () => {
+  await expect(exportObsidianProjection(vault, { ...snapshot, items: [] })).rejects.toThrow('missing item');
+  expect(await fs.readdir(vault)).toEqual([]);
 });

@@ -66,7 +66,7 @@ async function inspectTarget(path: string): Promise<'absent' | 'owned'> {
  * cannot eliminate the race between checking and renaming. Abrupt termination
  * may leave an orphaned temporary file, which later runs deliberately preserve.
  */
-export async function writeNavigationNote(vaultPath: string, content: string): Promise<void> {
+export async function writeNavigationNote(vaultPath: string, content: string, beforeReplace?: () => Promise<void>): Promise<void> {
   if (!content.startsWith(`${NAVIGATION_MARKER}\n`) || content.includes('\r') || !content.endsWith('\n')) {
     throw new NavigationWriteError('invalid-content');
   }
@@ -96,6 +96,7 @@ export async function writeNavigationNote(vaultPath: string, content: string): P
       throw error;
     }
     if (current !== original) throw new NavigationWriteError('target-changed');
+    await beforeReplace?.();
     await rename(temporary, target);
     created = false;
   } catch (error) {

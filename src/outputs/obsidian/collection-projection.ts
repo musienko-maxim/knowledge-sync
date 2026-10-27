@@ -1,8 +1,7 @@
 import type { CollectionMembership } from '../../core/models/collection-membership.js';
 import type { KnowledgeCollection } from '../../core/models/knowledge-collection.js';
 import type { KnowledgeItem } from '../../core/models/knowledge-item.js';
-import { buildObsidianCollectionRelativePath } from './collection-path.js';
-import { buildObsidianRelativePath } from './note-path.js';
+import { validatePathIdentity } from './readable-path.js';
 
 export interface CollectionProjection {
   readonly collection: KnowledgeCollection;
@@ -31,14 +30,14 @@ export function buildCollectionProjections(
 ): readonly CollectionProjection[] {
   const itemByIdentity = new Map<string, KnowledgeItem>();
   for (const item of items) {
-    buildObsidianRelativePath(item);
+    validatePathIdentity(item);
     const key = identity(item.source, item.sourceId);
     if (itemByIdentity.has(key)) throw new Error('Projection contains a duplicate item identity.');
     itemByIdentity.set(key, item);
   }
   const projectionByIdentity = new Map<string, { collection: KnowledgeCollection; items: KnowledgeItem[] }>();
   for (const collection of collections) {
-    buildObsidianCollectionRelativePath(collection);
+    validatePathIdentity(collection);
     const key = identity(collection.source, collection.sourceId);
     if (projectionByIdentity.has(key)) throw new Error('Projection contains a duplicate collection identity.');
     projectionByIdentity.set(key, { collection, items: [] });

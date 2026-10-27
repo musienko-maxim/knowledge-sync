@@ -3,15 +3,15 @@ import type { KnowledgeItem } from '../src/core/models/knowledge-item.js';
 import { renderKnowledgeItemMarkdown } from '../src/outputs/markdown.js';
 import { exportObsidianNote } from '../src/outputs/obsidian/export-note.js';
 import { buildObsidianRelativePath } from '../src/outputs/obsidian/note-path.js';
-import { writeObsidianNote } from '../src/outputs/obsidian/write-note.js';
+import { writeGeneratedObsidianNote } from '../src/outputs/obsidian/write-generated-note.js';
 
 vi.mock('../src/outputs/markdown.js', () => ({ renderKnowledgeItemMarkdown: vi.fn() }));
 vi.mock('../src/outputs/obsidian/note-path.js', () => ({ buildObsidianRelativePath: vi.fn() }));
-vi.mock('../src/outputs/obsidian/write-note.js', () => ({ writeObsidianNote: vi.fn() }));
+vi.mock('../src/outputs/obsidian/write-generated-note.js', () => ({ writeGeneratedObsidianNote: vi.fn() }));
 
 const pathBuilder = vi.mocked(buildObsidianRelativePath);
 const renderer = vi.mocked(renderKnowledgeItemMarkdown);
-const writer = vi.mocked(writeObsidianNote);
+const writer = vi.mocked(writeGeneratedObsidianNote);
 const item: KnowledgeItem = Object.freeze({
   source: ' example ', sourceId: ' Video1 ', title: ' Title ', url: 'https://example.com/item',
 });
@@ -33,7 +33,7 @@ describe('exportObsidianNote composition', () => {
     expect(renderer).toHaveBeenCalledExactlyOnceWith(item);
     expect(pathBuilder.mock.calls[0]![0]).toBe(item);
     expect(renderer.mock.calls[0]![0]).toBe(item);
-    expect(writer).toHaveBeenCalledExactlyOnceWith(vault, relativePath, content);
+    expect(writer).toHaveBeenCalledExactlyOnceWith(vault, relativePath, content, 'item', item);
     expect(pathBuilder.mock.invocationCallOrder[0]!).toBeLessThan(renderer.mock.invocationCallOrder[0]!);
     expect(renderer.mock.invocationCallOrder[0]!).toBeLessThan(writer.mock.invocationCallOrder[0]!);
   });

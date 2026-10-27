@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
 import type { KnowledgeItem } from '../../core/models/knowledge-item.js';
+import { assertWindowsPathComponent, buildReadableFilename, type PathSuffix } from './readable-path.js';
 
 function escapeByte(byte: number): string {
   return `%${byte.toString(16).toUpperCase().padStart(2, '0')}`;
@@ -29,7 +30,9 @@ export function encodeObsidianPathComponent(value: string, field: 'source' | 'so
   return encoded;
 }
 
-/** Pure identity mapping; metadata never determines a note's persistent path. */
-export function buildObsidianRelativePath(item: KnowledgeItem): string {
-  return `${encodeObsidianPathComponent(item.source, 'source')}/${encodeObsidianPathComponent(item.sourceId, 'sourceId')}.md`;
+/** Current readable title plus stable source-qualified identity discriminator. */
+export function buildObsidianRelativePath(item: KnowledgeItem, suffixForIdentity?: PathSuffix): string {
+  const directory = encodeObsidianPathComponent(item.source, 'source');
+  assertWindowsPathComponent(directory);
+  return `${directory}/${buildReadableFilename('item', item, suffixForIdentity)}`;
 }

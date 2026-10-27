@@ -6,8 +6,11 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createProgram } from '../src/cli/program.js';
 import * as sqlite from '../src/storage/sqlite/storage.js';
 import type { Storage } from '../src/storage/storage.js';
-import * as output from '../src/outputs/obsidian/export-notes.js';
+import * as output from '../src/outputs/obsidian/export-projection.js';
 import { buildObsidianRelativePath } from '../src/outputs/obsidian/note-path.js';
+import { buildObsidianCollectionRelativePath } from '../src/outputs/obsidian/collection-path.js';
+import { encodeMarkdownDestination } from '../src/outputs/obsidian/markdown-link.js';
+import type { KnowledgeItem } from '../src/core/models/knowledge-item.js';
 import * as config from '../src/auth/google-client-config.js';
 import * as oauth from '../src/auth/google-oauth.js';
 
@@ -87,6 +90,10 @@ const relationships = [
   { source: 'youtube', collectionSourceId: 'PLB', itemSourceId: 'Z' },
 ];
 
+function itemLink(item: KnowledgeItem): string {
+  return `(../${encodeMarkdownDestination(basename(buildObsidianRelativePath(item)))})`;
+}
+
 it.each(['sync', 'sync-obsidian'] as const)
 ('persists shared videos and memberships through %s, retaining legacy counters and output', async (kind) => {
   transport('A', ['X', 'Y']);
@@ -108,15 +115,15 @@ it.each(['sync', 'sync-obsidian'] as const)
     expect(await readFile(join(vault, buildObsidianRelativePath(initial.items[0]!)), 'utf8')).toContain('collection: "B"');
     expect(await readdir(join(vault, 'youtube'))).toHaveLength(4);
     const notes = await readdir(join(vault, 'youtube', 'collections'));
-    expect(notes).toEqual(['%50%4C%41.md', '%50%4C%42.md']);
-    const noteA = await readFile(join(vault, 'youtube/collections/%50%4C%41.md'), 'utf8');
-    const noteB = await readFile(join(vault, 'youtube/collections/%50%4C%42.md'), 'utf8');
-    expect(noteA).toContain('(../%2558.md)');
-    expect(noteA).toContain('(../%2559.md)');
-    expect(noteA).not.toContain('(../%255A.md)');
-    expect(noteB).toContain('(../%2558.md)');
-    expect(noteB).toContain('(../%255A.md)');
-    expect(noteB).not.toContain('(../%2559.md)');
+    expect(notes.sort()).toEqual(initial.collections.map((collection) => basename(buildObsidianCollectionRelativePath(collection))).sort());
+    const noteA = await readFile(join(vault, buildObsidianCollectionRelativePath(initial.collections[0]!)), 'utf8');
+    const noteB = await readFile(join(vault, buildObsidianCollectionRelativePath(initial.collections[1]!)), 'utf8');
+    expect(noteA).toContain(itemLink(initial.items[0]!));
+    expect(noteA).toContain(itemLink(initial.items[1]!));
+    expect(noteA).not.toContain(itemLink(initial.items[2]!));
+    expect(noteB).toContain(itemLink(initial.items[0]!));
+    expect(noteB).toContain(itemLink(initial.items[2]!));
+    expect(noteB).not.toContain(itemLink(initial.items[1]!));
   } else expect(await readdir(vault)).toEqual([]);
 
   transport('B', ['X', 'Z']);
@@ -138,11 +145,17 @@ it.each(['sync', 'sync-obsidian'] as const)
   if (kind === 'sync-obsidian') {
     expect(renamed.stdout()).toContain('new=0 changed=1 unchanged=0');
     expect(await readFile(join(vault, buildObsidianRelativePath(final.items[0]!)), 'utf8')).toContain('collection: "Renamed A"');
-    const collectionNote = await readFile(join(vault, 'youtube/collections/%50%4C%41.md'), 'utf8');
+    const collectionNote = await readFile(join(vault, buildObsidianCollectionRelativePath(final.collections[0]!)), 'utf8');
     expect(collectionNote).toContain('# Renamed A');
-    expect(collectionNote).not.toContain('(../%2559.md)');
+    expect(collectionNote).not.toContain(itemLink(final.items[1]!));
     expect(await readFile(join(vault, buildObsidianRelativePath(final.items[1]!)), 'utf8')).toContain('# Video Y');
-    expect(await readdir(join(vault, 'youtube', 'collections'))).toHaveLength(2);
+    expect(await readdir(join(vault, 'youtube', 'collections'))).toHaveLength(3);
+    const oldCollectionPath = buildObsidianCollectionRelativePath(initial.collections[0]!);
+    expect(await readFile(join(vault, oldCollectionPath), 'utf8')).toContain('# A');
+    const navigation = await readFile(join(vault, 'Knowledge Sync.md'), 'utf8');
+    expect(navigation).toContain(encodeMarkdownDestination(buildObsidianCollectionRelativePath(final.collections[0]!)));
+    expect(navigation).not.toContain(encodeMarkdownDestination(oldCollectionPath));
+    expect(renamed.stdout()).toContain('old filenames may remain');
   }
   // One metadata + one item-page request per run, no discovery request.
   expect(fetch).toHaveBeenCalledTimes(8);
@@ -165,9 +178,10 @@ it.each(['sync', 'sync-obsidian'] as const)
     collections: [{ source: 'youtube', sourceId: 'PLA', title: 'Renamed empty' }], items: [], memberships: [],
   });
   if (kind === 'sync-obsidian') {
-    const note = await readFile(join(vault, 'youtube/collections/%50%4C%41.md'), 'utf8');
+    const note = await readFile(join(vault, buildObsidianCollectionRelativePath({ source: 'youtube', sourceId: 'PLA', title: 'Renamed empty' })), 'utf8');
     expect(note).toContain('# Renamed empty');
     expect(note).toContain('_No items._');
+    expect(await readFile(join(vault, buildObsidianCollectionRelativePath({ source: 'youtube', sourceId: 'PLA', title: 'Empty' })), 'utf8')).toContain('# Empty');
   } else expect(await readdir(vault)).toEqual([]);
   expect(fetch).toHaveBeenCalledTimes(4);
 });
@@ -199,7 +213,7 @@ it.each(['sync', 'sync-obsidian'] as const)
     });
     return store;
   });
-  const exportNotes = vi.spyOn(output, 'exportObsidianNotes');
+  const exportNotes = vi.spyOn(output, 'exportObsidianProjection');
   transport('A', ['X', 'Y', 'Z']);
   const failed = command(kind, 'PLA');
   await expect(failed.run()).rejects.toMatchObject({ exitCode: 1 });
@@ -266,7 +280,7 @@ it.each((['sync', 'sync-obsidian'] as const).flatMap((kind) =>
   expect(final.items).toEqual(reconciled.items);
   expect(final.collections).toEqual(reconciled.collections);
   if (kind === 'sync-obsidian') {
-    expect(await readFile(join(vault, 'youtube/collections/%50%4C%41.md'), 'utf8')).toContain('_No items._');
+    expect(await readFile(join(vault, buildObsidianCollectionRelativePath(final.collections[0]!)), 'utf8')).toContain('_No items._');
     for (const item of final.items) {
       expect(await readFile(join(vault, buildObsidianRelativePath(item)), 'utf8')).toContain(`# ${item.title}`);
     }
@@ -276,15 +290,17 @@ it.each((['sync', 'sync-obsidian'] as const).flatMap((kind) =>
 it('keeps reconciliation committed after collection export fails and recovers on the next export', async () => {
   transport('A', ['X', 'Y']);
   await command('sync-obsidian', 'PLA').run();
-  const note = join(vault, 'youtube/collections/%50%4C%41.md');
-  const itemNote = join(vault, 'youtube/%59.md');
+  const initial = await snapshot();
+  const note = join(vault, buildObsidianCollectionRelativePath(initial.collections[0]!));
+  const itemNote = join(vault, buildObsidianRelativePath(initial.items[1]!));
   const retainedText = await readFile(itemNote, 'utf8');
   await rm(note);
   await mkdir(note);
   transport('A', ['X']);
   const failed = command('sync-obsidian', 'PLA');
   await expect(failed.run()).rejects.toMatchObject({ exitCode: 1, code: 'knowledge-sync.obsidian-export' });
-  expect(failed.stdout()).toContain('Memberships: removed=1');
+  expect(failed.stdout()).toContain('Items: skipped (preflight conflict)');
+  expect(failed.stdout()).toContain('Collections: skipped (preflight conflict)');
   expect((await snapshot()).memberships).toEqual([relationships[0]]);
   expect(await readFile(itemNote, 'utf8')).toBe(retainedText);
   await rm(note, { recursive: true });
@@ -292,7 +308,7 @@ it('keeps reconciliation committed after collection export fails and recovers on
   const recovered = command('sync-obsidian', 'PLA');
   await recovered.run();
   expect(recovered.stdout()).toContain('Memberships: removed=0');
-  expect(await readFile(note, 'utf8')).toContain('(../%2558.md)');
-  expect(await readFile(note, 'utf8')).not.toContain('(../%2559.md)');
+  expect(await readFile(note, 'utf8')).toContain(itemLink(initial.items[0]!));
+  expect(await readFile(note, 'utf8')).not.toContain(itemLink(initial.items[1]!));
   expect(await readFile(itemNote, 'utf8')).toBe(retainedText);
 });

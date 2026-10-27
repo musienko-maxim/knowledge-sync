@@ -34,6 +34,7 @@ afterEach(() => {
 
 function setup() {
   const storage: Storage = {
+    readSnapshot: vi.fn(() => ({ items: [], collections: [], memberships: [] })),
     knowledgeItems: { findByIdentity: vi.fn(), upsert: vi.fn(), listAll: vi.fn() },
     collections: { upsert: vi.fn(), listAll: vi.fn() },
     collectionMemberships: { removeStaleForCollection: vi.fn(), add: vi.fn(), listAll: vi.fn() },

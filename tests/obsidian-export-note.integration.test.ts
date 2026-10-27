@@ -46,7 +46,7 @@ describe('exportObsidianNote filesystem integration', () => {
 
   it('overwrites the same identity with shorter changed content and preserves repeat output', async () => {
     const original = { ...item, description: 'Long description. '.repeat(50) };
-    const updated = { ...item, title: 'Changed title', collection: 'Other collection', description: 'Short' };
+    const updated = { ...item, collection: 'Other collection', description: 'Short' };
     const relativePath = buildObsidianRelativePath(original);
     expect(buildObsidianRelativePath(updated)).toBe(relativePath);
     await exportObsidianNote(vault, original);
@@ -60,7 +60,7 @@ describe('exportObsidianNote filesystem integration', () => {
 
   it('propagates a missing-vault filesystem error without creating that vault', async () => {
     const missingVault = join(directory, 'missing', 'vault');
-    await expect(exportObsidianNote(missingVault, item)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(exportObsidianNote(missingVault, item)).rejects.toMatchObject({ code: 'missing-vault' });
     expect(await readdir(directory)).toEqual(['vault']);
     expect(await readdir(vault)).toEqual([]);
   });

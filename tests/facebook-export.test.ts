@@ -42,7 +42,7 @@ afterEach(async () => {
 });
 
 describe('Facebook shared export protection', () => {
-  it('creates and replaces owned item/collection files deterministically without changing paths', async () => {
+  it('creates owned files deterministically and preserves the old path on title changes', async () => {
     const projection = { collection, items: [item] };
     await exportObsidianNote(vault, item);
     await exportObsidianCollection(vault, projection);
@@ -56,7 +56,9 @@ describe('Facebook shared export protection', () => {
     await exportObsidianNote(vault, item);
     expect(await fs.readFile(itemPath)).toEqual(bytes);
     await exportObsidianNote(vault, { ...item, title: 'Updated' });
-    expect(await fs.readFile(itemPath, 'utf8')).toBe(renderKnowledgeItemMarkdown({ ...item, title: 'Updated' }));
+    expect(await fs.readFile(itemPath)).toEqual(bytes);
+    expect(await fs.readFile(join(vault, buildObsidianRelativePath({ ...item, title: 'Updated' })), 'utf8'))
+      .toBe(renderKnowledgeItemMarkdown({ ...item, title: 'Updated' }));
     expect((await fs.readdir(dirname(itemPath))).filter((name) => name.endsWith('.tmp'))).toEqual([]);
   });
 
@@ -76,7 +78,7 @@ describe('Facebook shared export protection', () => {
     ]) {
       expect(previous).not.toBe(prefix);
       await fs.writeFile(path, previous, 'utf8');
-      await expect(write()).rejects.toMatchObject({ reason: 'unowned-target' });
+      await expect(write()).rejects.toMatchObject({ code: 'unowned-target' });
       expect(await fs.readFile(path, 'utf8')).toBe(previous);
     }
     expect(fs.rename).not.toHaveBeenCalled();
@@ -84,8 +86,8 @@ describe('Facebook shared export protection', () => {
 
   it.each(['item', 'collection'] as const)('preserves old %s bytes and supports retry after rename failure', async (entity) => {
     const write = (title: string) => entity === 'item'
-      ? exportObsidianNote(vault, { ...item, title })
-      : exportObsidianCollection(vault, { collection: { ...collection, title }, items: [item] });
+      ? exportObsidianNote(vault, { ...item, description: title })
+      : exportObsidianCollection(vault, { collection, items: [{ ...item, title }] });
     const path = join(vault, entity === 'item' ? buildObsidianRelativePath(item) : buildObsidianCollectionRelativePath(collection));
     await write('Old');
     const old = await fs.readFile(path);
@@ -104,7 +106,6 @@ describe('Facebook shared export protection', () => {
     const old = await fs.readFile(path);
     const actualOpen = (await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')).open;
     const failure = new Error('fixture failure');
-    vi.mocked(fs.open).mockImplementationOnce(actualOpen); // ownership reader
     vi.mocked(fs.open).mockImplementationOnce(async (...args) => {
       const handle = await actualOpen(...args);
       if (operation === 'write') {
@@ -116,7 +117,7 @@ describe('Facebook shared export protection', () => {
       }
       return handle;
     });
-    await expect(exportObsidianNote(vault, { ...item, title: 'New' })).rejects.toBe(failure);
+    await expect(exportObsidianNote(vault, { ...item, description: 'New' })).rejects.toBe(failure);
     expect(await fs.readFile(path)).toEqual(old);
     expect((await fs.readdir(dirname(path))).filter((name) => name.endsWith('.tmp'))).toEqual([]);
   });
@@ -142,7 +143,7 @@ describe('Facebook shared export protection', () => {
     await fs.mkdir(dirname(path), { recursive: true });
     await fs.symlink(outside, path, 'junction');
     const selectedVault = component === 'vault' ? path : vault;
-    await expect(exportObsidianCollection(selectedVault, { collection, items: [item] })).rejects.toMatchObject({ reason: 'unsafe-path' });
+    await expect(exportObsidianCollection(selectedVault, { collection, items: [item] })).rejects.toMatchObject({ code: 'unsafe-path' });
     expect(await fs.readdir(outside)).toEqual([]);
   });
 
@@ -150,7 +151,7 @@ describe('Facebook shared export protection', () => {
     const link = join(directory, 'linked-parent');
     await fs.symlink(vault, link, 'junction');
     await fs.mkdir(join(vault, 'nested'));
-    await expect(exportObsidianNote(join(link, 'nested'), item)).rejects.toMatchObject({ reason: 'unsafe-path' });
+    await expect(exportObsidianNote(join(link, 'nested'), item)).rejects.toMatchObject({ code: 'unsafe-path' });
     expect(await fs.readdir(join(vault, 'nested'))).toEqual([]);
   });
 
@@ -158,19 +159,16 @@ describe('Facebook shared export protection', () => {
     const link = join(directory, 'linked-vault');
     await fs.symlink(vault, link, 'junction');
     const youtube = { ...item, source: 'youtube', sourceId: 'fixture-youtube-id' };
-    const result = await exportObsidianProjection(link, {
+    await expect(exportObsidianProjection(link, {
       items: mixed ? [item, youtube] : [item], collections: [collection], memberships: [],
-    });
-    expect(result.items.failures[0]?.item.source).toBe('facebook');
-    expect(result.collections.status === 'completed' && result.collections.result.failed).toBe(1);
-    expect(result.navigation).toMatchObject({ status: 'failed', stage: 'write', error: { reason: 'unsafe-path' } });
+    })).rejects.toMatchObject({ code: 'unsafe-path' });
     await expect(fs.lstat(join(vault, 'Knowledge Sync.md'))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(fs.lstat(join(vault, 'facebook'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('rejects an ordinary file as an intermediate directory', async () => {
     await fs.writeFile(join(vault, 'facebook'), 'Preserve intermediate file');
-    await expect(exportObsidianNote(vault, item)).rejects.toMatchObject({ reason: 'unsafe-path' });
+    await expect(exportObsidianNote(vault, item)).rejects.toMatchObject({ code: 'unsafe-path' });
     expect(await fs.readFile(join(vault, 'facebook'), 'utf8')).toBe('Preserve intermediate file');
   });
 
@@ -181,18 +179,19 @@ describe('Facebook shared export protection', () => {
     await fs.mkdir(outside);
     await fs.writeFile(join(outside, 'keep'), 'Preserve');
     await fs.symlink(outside, path, 'junction');
-    await expect(exportObsidianNote(vault, item)).rejects.toMatchObject({ reason: 'unsafe-path' });
+    await expect(exportObsidianNote(vault, item)).rejects.toMatchObject({ code: 'unsafe-path' });
     expect(await fs.readFile(join(outside, 'keep'), 'utf8')).toBe('Preserve');
   });
 
   it('rejects mocked dangling/file links before opening the target', async () => {
     const path = join(vault, buildObsidianRelativePath(item));
+    await fs.mkdir(dirname(path));
     const actual = (await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')).lstat;
     vi.mocked(fs.lstat).mockImplementation(async (...args) => {
       if (args[0] === path) return { isSymbolicLink: () => true, isFile: () => false } as Awaited<ReturnType<typeof fs.lstat>>;
       return actual(...args);
     });
-    await expect(exportObsidianNote(vault, item)).rejects.toMatchObject({ reason: 'unsafe-path' });
+    await expect(exportObsidianNote(vault, item)).rejects.toMatchObject({ code: 'unsafe-path' });
     expect(fs.open).not.toHaveBeenCalled();
   });
 
@@ -200,7 +199,6 @@ describe('Facebook shared export protection', () => {
     await exportObsidianNote(vault, item);
     const path = join(vault, buildObsidianRelativePath(item));
     const actualOpen = (await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')).open;
-    vi.mocked(fs.open).mockImplementationOnce(actualOpen);
     vi.mocked(fs.open).mockImplementationOnce(async (...args) => {
       const handle = await actualOpen(...args);
       const write = handle.writeFile.bind(handle);
@@ -210,24 +208,20 @@ describe('Facebook shared export protection', () => {
       });
       return handle;
     });
-    await expect(exportObsidianNote(vault, item)).rejects.toMatchObject({ reason: 'unowned-target' });
+    await expect(exportObsidianNote(vault, { ...item, description: 'changed' })).rejects.toMatchObject({ code: 'unowned-target' });
     expect(await fs.readFile(path, 'utf8')).toBe('New user content');
   });
 
-  it('retains multi-source full navigation and protects Facebook collisions in shared batches', async () => {
+  it('blocks the whole mixed-source projection before writing when Facebook has a collision', async () => {
     const youtube = { source: 'youtube', sourceId: 'video-id', url: 'https://www.youtube.com/watch?v=video-id', title: '**Legacy title**', description: '<b>Legacy</b>' };
     const path = join(vault, buildObsidianRelativePath(item));
     await fs.mkdir(dirname(path));
     await fs.writeFile(path, 'User note');
-    const result = await exportObsidianProjection(vault, { items: [item, youtube], collections: [collection], memberships: [] });
-    expect(result.items).toMatchObject({ processed: 2, succeeded: 1, failed: 1 });
-    expect(result.navigation.status).toBe('completed');
+    await expect(exportObsidianProjection(vault, { items: [item, youtube], collections: [collection], memberships: [] }))
+      .rejects.toThrow('preflight');
     expect(await fs.readFile(path, 'utf8')).toBe('User note');
-    expect(await fs.readFile(join(vault, buildObsidianRelativePath(youtube)), 'utf8')).toBe(renderKnowledgeItemMarkdown(youtube));
-    const navigation = await fs.readFile(join(vault, 'Knowledge Sync.md'), 'utf8');
-    expect(navigation).toContain('youtube/video-id.md');
-    expect(navigation).toContain('facebook/url-v1-');
-    expect(navigation).toContain('facebook/collections/');
+    await expect(fs.lstat(join(vault, buildObsidianRelativePath(youtube)))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fs.lstat(join(vault, 'Knowledge Sync.md'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });
 

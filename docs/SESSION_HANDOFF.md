@@ -1,6 +1,279 @@
 # Project Session Handoff
 
-Updated: 2026-10-12
+Updated: 2026-10-27
+
+## Task 024 Gate A/B1 evidence reconciliation — 2026-10-27
+
+**DOCUMENTATION ONLY — GATE B2 NOT EXECUTED; REAL DEPLOYMENT PENDING SEPARATE EXPLICIT AUTHORIZATION.**
+
+This checkpoint updates deployment status; the earlier preparation and implementation
+entries below remain historical records of their own session scopes.
+
+Gate A completed and was verified. The exact verified backup location is:
+`D:\knowledge-sync-backups\task024-predeploy-20261026-233422Z`.
+Read-only inspection of its existing evidence during this reconciliation confirmed:
+
+- `D:\knowledge-sync-backups\task024-predeploy-20261026-233422Z\evidence\result.json`
+  records `passed=true`, `failure=null`, at `2026-10-26T23:43:39.719Z`.
+- `D:\knowledge-sync-backups\task024-predeploy-20261026-233422Z\evidence\sqlite-verification.json`
+  records SQLite integrity `ok`, 322 items, 28 collections, 323 memberships,
+  and zero invalid membership references.
+- `D:\knowledge-sync-backups\task024-predeploy-20261026-233422Z\evidence\vault-backup-manifest.json`
+  records 605 files and 101 directories verified by Gate A. The existing
+  `evidence\baseline.json` and `evidence\post-backup.json` record matching counts.
+
+This confirms the recorded Gate A results, not a fresh live-source comparison or
+a new byte-for-byte backup verification. The source baseline reference is
+`D:\knowledge-sync-backups\task024-predeploy-20261026-233422Z\evidence\baseline.json`;
+it is Gate A evidence, not proof of Gate B1 execution.
+
+**Gate B1 reported PASSED:** the user supplied the prior result of 350 additions,
+1 update, 0 unchanged, and 0 conflicts. No persistent Gate B1 execution report,
+log, or B1-specific baseline was located in the repository or the supplied backup's
+evidence directory. The [B1 prompt](../prompts/task-024-gate-b1-final-preflight.md)
+is a procedure, not a completed report. This evidence gap remains unresolved;
+no execution evidence has been invented or regenerated.
+
+The renamed [Gate B2 real-export prompt](../prompts/task-024-gate-b2-real-export.md)
+requires fresh read-only B1 acceptance checks immediately before any separately
+authorized B2 execution, including baseline/backup revalidation, quiescence,
+sidecar checks, exact dry-run counts and targets, ownership/path/link checks,
+and confirmation that the dry-run leaves the sources unchanged. Changed inputs
+require renewed verification and approval of the changed plan under the
+[canonical Phase 1 specification](../prompts/task-024-real-vault-deployment-phase-1.md).
+
+The B2 prompt now distinguishes identity, ownership, SHA-256 fingerprint, path,
+and link validation for the 350 new item/collection files from root navigation's
+marker, expected-content, and link checks. `Knowledge Sync.md` does not require
+an item/collection fingerprint; its historical manual-modification status remains
+UNKNOWN, and its marker alone does not prove the absence of past manual edits.
+
+Gate B2 has not been executed. No live SQLite or vault inspection, dry-run,
+export, backup modification, cleanup, migration, rollback, commit, or push was
+performed during this documentation reconciliation. Only the renamed B2 prompt
+and this handoff were changed. Legacy cleanup and Task 025 remain excluded;
+all 350 legacy files must remain intact. Stop here: real deployment requires
+separate explicit user approval.
+
+## Task 024 Phase 1 preparation — 2026-10-27
+
+**READ-ONLY ASSESSMENT PREVIOUSLY REPORTED COMPLETE — REAL DEPLOYMENT PENDING.**
+
+The completed read-only real-vault assessment was reported after the implementation
+checkpoint below. The following findings are supplied prior assessment evidence,
+not fresh verification by this documentation session:
+
+- 322 KnowledgeItems: 52 YouTube and 270 Facebook; 28 collections and 323 memberships.
+- 350 legacy item/collection Markdown files reportedly matched reconstructed
+  legacy rendering byte-for-byte. Another 161 Markdown files were outside the
+  generated areas: 512 Markdown files total, including root navigation.
+- SQLite was reported in rollback-journal mode without WAL, SHM, or journal
+  sidecars, with a consistent read-only snapshot.
+- No occupied new targets or Windows path conflicts were identified. Static
+  scanning found no backlinks from the 161 external Markdown files to legacy
+  generated files; this is limited scan evidence, not proof about all references.
+- `Knowledge Sync.md` reportedly matched reconstructed legacy output. Its
+  historical manual-modification status remains UNKNOWN; marker-only ownership
+  does not detect historical manual edits.
+- Real-vault dry-run reportedly succeeded with 350 additions, one root navigation
+  update, and zero conflicts. No real export, cleanup, or backup creation occurred
+  during that assessment.
+
+No persistent completed assessment report was located in the repository
+documentation reviewed for this refinement. The
+[assessment brief](../prompts/real-vault-assesment.md) is an investigation
+specification, not a results report. Original terminal/chat output, exact manifests,
+hashes, and scan details are not available as a linked report here. The supplied
+findings are recorded with that evidence gap; current state still requires the
+checks specified for future deployment.
+
+The canonical [Phase 1 deployment specification](../prompts/task-024-real-vault-deployment-phase-1.md)
+now contains the complete additive deployment procedure: fresh verified SQLite
+and full-vault backups, a path/hash/mtime baseline, exactly 350 planned additions
+and one root replacement, separate item/collection fingerprint and root-marker
+validation, protected-file checks, and repeat-export acceptance of 0 additions,
+0 updates, 351 unchanged, and 0 conflicts with unchanged bytes and mtimes.
+
+Authorization boundaries remain explicit:
+
+- **Gate A:** present backup destinations and procedure, then obtain explicit
+  approval before creating backups. Preserve the historical Task 021 backup.
+- **Gate B:** after verified backups, baseline capture, and exact final dry-run,
+  obtain explicit approval for initial export, replacement of `Knowledge Sync.md`,
+  and repeat export after successful initial verification. Gate A does not grant
+  Gate B approval.
+- **Gate C:** on failure, stop exports, preserve state, compare against the
+  baseline, and report partial publication. Obtain separate explicit approval
+  before removing new files or restoring root navigation; no automatic rollback.
+
+Legacy cleanup remains excluded, including after successful verification; all
+350 legacy files must remain in place. Task 025 has not started. This documentation
+update grants no backup, deployment, rollback, cleanup, commit, or push authority.
+No real database or vault access was performed in this session. Only the canonical
+Phase 1 specification and this handoff were edited; useful historical checkpoints
+below are retained and describe their own session scopes.
+
+## Task 024 implementation — 2026-10-26
+
+The user approved the architecture review with explicit changes in
+[prompts/task-024.md](../prompts/task-024.md), then repeatedly resumed work after
+usage-limit interruptions. The task file now retains that authorization and the
+finalized contract. Implementation is authorized; real-vault deployment is not.
+Preserve the pre-existing review/handoff edits and `prompts/arc-review.md`.
+Do not commit or push automatically.
+
+Implemented:
+
+- Readable Unicode current-title prefixes plus the specified 32-hex SHA-256
+  source/kind/full-ID suffix; no identity changes, path registry or schema changes.
+- One immutable shared path/render plan, full destination preflight, portable
+  collision/path budgets and all-source ancestor/junction checks. All production
+  exporters and item/collection-only batch adapters use the new contracts.
+- Versioned full-identity ownership and exact-byte SHA-256 fingerprints for new
+  items/collections. The parser accepts only its documented generated YAML grammar.
+  Unknown, old-format and modified targets are preserved. Navigation retains its
+  separate marker-only ownership protection and current combined-section layout.
+- Phase-gated atomic per-file publication: item failures skip collections/root;
+  collection failures skip root. Identical files keep bytes and modification times.
+  Title changes produce current links/new paths while old files remain untouched.
+- `export obsidian --db <existing.sqlite> --vault <existing-directory> [--dry-run]`.
+  Explicit paths only, consistent read transaction, no source/network credentials,
+  no writable initialization, no schema creation. Conservative header/filesystem
+  checks reject WAL/journal/sidecar states; no recovery/checkpoint/repair is tried.
+  SQLite temporary storage is memory-only. Dry-run does not write files or sidecars.
+- Storage-owned snapshots for existing export flows; strict original identity-byte
+  validation before the SQLite driver's string decoding, including UTF-8/UTF-16.
+- Privacy-safe collision codes/indexes and explicit skipped phases in all CLI routes.
+  Possible leftovers are informational and never authorize adoption or cleanup.
+
+New source files: `src/cli/obsidian-export.ts`,
+`src/outputs/obsidian/{export-plan,generated-note,preflight,readable-path,safe-path,write-generated-note}.ts`,
+`src/storage/knowledge-snapshot.ts` and
+`src/storage/sqlite/{read-only-snapshot,read-snapshot}.ts`.
+Existing application, CLI, renderer/path/publisher and storage files are integrated;
+the existing directory structure is retained:
+`src/{application,auth,cli,collectors,core/models,outputs/obsidian,storage/sqlite}`,
+`tests`, `data`, `docs`, and `prompts`.
+
+New regression files: `tests/{export-plan,generated-note,obsidian-export-cli,obsidian-preflight,readonly-snapshot}.test.ts`.
+Existing tests intentionally change title-independent filename expectations and
+continuation-after-failure behavior. Updated documentation: task specification,
+README, [output contract](../src/outputs/obsidian/README.md), and this handoff.
+
+**IMPLEMENTED AND VERIFIED — temporary-vault acceptance complete.**
+
+Final verification:
+
+- `npm.cmd install` passed, with no dependency/version changes. Audit reported
+  five findings (two moderate, three high); dependency remediation is outside scope.
+- Focused storage, naming/rendering, CLI, publication and safety suites passed.
+  Exact-byte YAML parser and malformed SQLite identity-byte regressions also pass.
+- Final `npm.cmd test`: **1,243 passed, 4 skipped, 54 files passed**. The skips
+  are the existing POSIX-permission test and three navigation file-symlink tests
+  unavailable on Windows. Real directory-junction safety regressions pass.
+  A sandboxed diagnostic run hit `uv_os_get_passwd ENOMEM` in tsx subprocess
+  tests; the approved escalated final full run passed. Earlier failures from
+  obsolete filename/publication assertions were updated to the approved contracts.
+- `npm.cmd run typecheck` and `npm.cmd run build` passed.
+- Built startup/top-level help, `export obsidian --help`, YouTube sync-obsidian help,
+  Facebook import help and packaged `knowledge-sync --help` passed.
+- Built CLI temporary E2E passed: 2 mixed-source items, 1 collection, 4 Markdown
+  files; zero-write dry-run, repeat byte/mtime identity, then title change with 5
+  files and updated links while old bytes remain. Temporary files were removed.
+- Independent architecture/security review has no remaining actionable findings.
+  Review fixes reject ambiguous duplicate YAML keys even with recomputed digests,
+  reject corrupted identity bytes before decoder replacement, and retain safe
+  collision details in Facebook/export-only errors.
+- Windows executed; real junction cases pass. Linux was not executed because WSL
+  is not installed. Portable naming/path policies are exercised on Windows too.
+- `git diff --check` and 18 current local documentation links passed. No package
+  manifest or lockfile dependency changes. Temporary diagnostic reports removed.
+
+Known limits: WAL/journal states intentionally unsupported by export-only;
+no automatic historical-file cleanup/migration or backlink repair; root navigation
+body edits remain replaceable under its dedicated marker. One writer and no
+concurrent external changes are assumed; preflight/open and check/rename races
+are not eliminated. No cross-file transaction or universal power-loss durability.
+During this implementation verification, the real DB, `D:\obsidian`, and verified
+Task 021 backup were not accessed. The later read-only assessment is recorded
+above as previously reported evidence; it did not execute deployment.
+No dependencies, architecture expansion, commits or pushes were added.
+No implementation deviations from the finalized specification; Linux execution
+is the disclosed verification limitation. No open code-review findings remain.
+
+Before separately authorized real-vault use: inventory actual output, confirm fresh
+DB/vault backups, run dry-run and review links/conflicts. Preserve the historical
+backup. Migration/cleanup requires a separate reviewed task. Do not start Task 023
+or any next task automatically.
+
+## Revised readable-filename architecture review — 2026-10-25
+
+The user requested a read-only architecture review of the revised
+[filename proposal](../prompts/arc-review.md). This version supersedes the earlier
+presentation-only/plugin preference: the user requires readable physical Markdown
+filenames that work in Windows Explorer, accepts title-driven path changes, and
+allows a controlled rebuild of generated output. The review was returned in the
+conversation. No implementation, tests, SQLite access, vault access, or backup
+access was performed. `prompts/arc-review.md` remains an untracked user file and
+must be preserved.
+
+**RECOMMENDATION: readable current-title prefixes plus a deterministic suffix,
+without a persistent path registry.** A proposed suffix is a truncated SHA-256
+over a versioned, source-qualified identity tuple including entity kind; full
+identity remains authoritative in SQLite and generated metadata. Slugs should
+preserve Ukrainian/Unicode letters, use deterministic normalization, and handle
+Windows-invalid names, case-insensitive collisions, malformed Unicode, and path
+budgets. The exact slug/suffix contract remains to be specified; the review's
+example lengths are proposals, not accepted requirements.
+
+The existing architecture has no path registry. `src/outputs/obsidian/note-path.ts`
+and `collection-path.ts` currently derive paths from identity only. Notes include
+title frontmatter, but navigation, collection links, writers, and projection
+validation independently call those current path builders. If implemented, one
+export plan must calculate each target once and feed all note/index links.
+
+An export-only command needs a new read-only SQLite snapshot path: current
+`openStorage()` creates directories and bootstraps tables, so it is unsuitable.
+The snapshot must be consistent, the database must already exist, and errors
+must occur before vault writes. The command must not fetch YouTube data, require
+credentials, or import Facebook data.
+
+**Cleanup is the main safety risk.** Existing Facebook ownership checks validate
+an identity prefix but not user edits elsewhere in a note. Legacy YouTube writes
+do not have equivalent ownership protection. New generated files should carry
+versioned full-identity ownership data and a content fingerprint for detecting
+ordinary edits; fingerprints are provenance checks, not authentication. Legacy
+files need a one-time reviewed allowlist of exact paths, identities, and content
+hashes. Unknown or modified files should be preserved.
+
+Publish all new items, then collections, then root navigation. Any failure
+suppresses cleanup. On complete publication, retire only verified obsolete files
+whose identity has a successfully published replacement. Compare Windows
+equivalent paths so a case-only title change cannot delete its new target. Prune
+old collection indexes before item notes; stop cleanup on conflicts or errors.
+Empty snapshots and identities absent from the snapshot never trigger broad
+deletion. Interrupted runs may leave duplicate generated files for retry.
+
+Generated links can be rebuilt, but user-authored backlinks to old filenames
+cannot be guaranteed. This compatibility consequence requires explicit
+acceptance or separately scoped reference migration. No global filesystem or
+SQLite transaction is available.
+
+The review recommends a **separate implementation task**, since the work changes
+filename compatibility and adds export-only reading, ownership/fingerprint
+behavior, phased publication, and cleanup. Relevant areas include
+`src/outputs/obsidian/{note-path,collection-path,collection-markdown,navigation-markdown,export-projection,write-owned-note}.ts`,
+`src/outputs/markdown.ts`, `src/storage/sqlite/storage.ts`,
+`src/application/read-obsidian-snapshot.ts`, `src/cli/program.ts`, and existing
+path, Markdown, projection, Facebook export, and CLI tests. Existing tests that
+assert title-independent paths and export continuation after note failures must
+change intentionally.
+
+No implementation is authorized by this review. Before implementation, specify
+the final naming/collision rules, legacy-file adoption and deletion policy,
+backlink compatibility choice, export-only command behavior, and acceptance
+tests. Any real-vault rebuild needs separate explicit authorization and a fresh
+backup; preserve the recorded Task 021 backup.
 
 ## Task 021 implementation recovery — 2026-10-11
 

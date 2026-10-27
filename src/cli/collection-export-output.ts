@@ -3,6 +3,9 @@ import { formatObsidianCollectionExportFailure } from './obsidian-export-failure
 
 /** Keep collection counts separate from the existing item export summary. */
 export function formatCollectionExportOutcome(outcome: CollectionExportOutcome): { output: string; errors: string; failed: boolean } {
+  if (outcome.status === 'skipped') {
+    return { output: 'Collections: skipped (earlier export failure)\n', errors: '', failed: true };
+  }
   if (outcome.status === 'failed') {
     return { output: '', errors: 'Obsidian collection batch export failed. Check the vault and collection data.\n', failed: true };
   }

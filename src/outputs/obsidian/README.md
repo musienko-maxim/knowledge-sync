@@ -1,180 +1,124 @@
-[`writeObsidianNote(vaultPath, relativePath, content)`](write-note.ts) writes supplied
-UTF-8 text into an existing vault directory and returns `Promise<void>`. It creates
-missing parents below that root and overwrites the destination completely.
-Content is opaque: no BOM, newline, or formatting is added; supplied content,
-including any existing BOM, is preserved. Filesystem errors propagate.
+# Obsidian output contract
 
-Blank vault paths and blank/root-equivalent destinations are rejected. Native
-path resolution must keep the destination strictly below the root. Contained
-`folder/../note.md` is allowed; escapes and native rooted/drive-qualified paths
-are rejected before filesystem changes. Relative vault paths resolve against cwd.
-Windows recognizes both separators; POSIX uses its native filename semantics.
-Otherwise valid path values are not trimmed or sanitized.
+Task 024 uses a reproducible, non-destructive projection of persisted knowledge.
+SQLite owns identities and metadata; generated files have no persistent path registry.
 
-For this legacy writer, containment is lexical only; symlinks are followed normally. Writes are not atomic;
-failed writes can leave partial content. The writer does not discover vaults, read
-configuration, render Markdown, select filenames, or integrate with sync/import state.
+## Plan and paths
 
-[`buildObsidianRelativePath(item)`](note-path.ts) is the pure identity mapping to
-`<encoded-source>/<encoded-sourceId>.md`. It ignores mutable metadata, preserves
-identity distinctions through byte encoding, and does not truncate long names.
-The pure renderer remains in [../markdown.ts](../markdown.ts), independently of
-the path builder and writer.
+[buildObsidianExportPlan](export-plan.ts) validates the snapshot, clones/freezes
+entities, sorts by raw source/ID and calculates each path exactly once.
+Collection and root-navigation renderers receive that mapping. Duplicate entities,
+duplicate/dangling memberships, suffix collisions and portable path collisions
+fail before publication. The plan stores paths and complete rendered Markdown.
 
-[`exportObsidianNote(vaultPath, item): Promise<void>`](export-note.ts) composes the
-path builder, renderer, and awaited writer in that order, once each. It forwards
-the original inputs and generated outputs unchanged. Path or rendering failures
-skip later steps; all failures reject with their original value. Success returns
-no result and occurs only after writing completes. The supplied item is not mutated.
+[Readable paths](readable-path.ts) use `<title-prefix>--<32-hex>.md` within the
+existing byte-encoded source directory; collections retain `collections/`.
+The suffix is SHA-256 over UTF-8
+`JSON.stringify(["knowledge-sync-readable-path-v1", kind, source, sourceId])`,
+truncated to 32 lowercase hex characters. Identity strings are never normalized.
+The suffix is a filename discriminator, not ownership authority.
 
-For sources other than Facebook, the exporter inherits the legacy writer's containment, overwrite, and failure semantics;
-an encoded path can still exceed native filesystem length limits. It does not
-load configuration, access SQLite, record imports, select items, or integrate with
-sync or the CLI. `Output.write(item)` remains unchanged. No Obsidian API or Git
-automation is used.
+Prefixes apply NFC then JavaScript default lowercase, keep Unicode letters,
+marks and numbers, replace other runs with `-`, and remove unattached leading
+marks. Complete graphemes fit both 80 code points and 160 UTF-8 bytes; trailing
+hyphens are removed. Empty results use `untitled-item` or `untitled-collection`.
+Safe Ukrainian and other Unicode text stays readable. The conservative portable
+comparison key is NFC → default uppercase → NFC. Windows device names, invalid
+characters and unsafe trailing dots/spaces are rejected. Absolute destination
+and sibling temporary paths have a 240 UTF-16-code-unit portability budget on
+both Windows and Linux. This is a policy, not an OS capability guarantee.
 
-[`exportObsidianNotes(vaultPath, items): Promise<ObsidianBatchExportResult>`](export-notes.ts)
-accepts a readonly item array and awaits the single-item exporter sequentially in
-input order. It attempts duplicate entries independently, forwarding the original
-vault string and item references without mutating inputs. Per-item failures are
-captured and later entries continue; the result waits for the final settlement.
+[Markdown destination encoding](markdown-link.ts) is separate from filenames:
+encode each literal path segment, preserving `/`. Facebook text escaping remains
+context-specific and is not globally decoded. Navigation retains the existing
+Collections / All items layout, title normalization/order and duplicate labels.
 
-The same module exports `ObsidianBatchExportResult` and `ObsidianExportFailure`.
-The result has `processed`, `succeeded`, `failed`, and `failures`; each failure
-retains its zero-based `index`, original `item`, and exact `error: unknown`.
-Failures are ordered by input index. Counts describe entry outcomes, not unique
-files or preserved final contents. Later duplicate writes may replace or damage
-earlier output under the writer's existing non-atomic semantics.
+## Ownership v1 and exact-byte fingerprints
 
-Empty input returns zero counts and no failures without touching the vault.
-There is no batch-level vault validation: if the single-item exporter fails for
-every entry, every failure is recorded. The batch adds no retries, deduplication,
-rollback, concurrency, or sync/CLI/database integration.
+[generated-note.ts](generated-note.ts) places this fixed header at byte zero:
 
-The application-level [syncToObsidian](../../application/sync-to-obsidian.ts)
-composes successful sync, an ordered repository snapshot read, and this batch API.
-Every persisted item is attempted, including unchanged and previously retained
-items. Partial output failures leave persistence intact and are returned normally;
-the full snapshot allows a later run to attempt failed notes again. It guarantees
-no exact vault mirror, reconciliation, deletion, retry, rollback, or export-state
-tracking. The batch implementation remains independent of storage and the CLI.
+```yaml
+---
+knowledge_sync: "generated-note-v1"
+knowledge_sync_identity: "<base64url token>"
+knowledge_sync_sha256: "<64 lowercase hexadecimal characters>"
+source: "youtube"
+sourceId: "example"
+title: "Example"
+---
+```
 
-The single-playlist CLI uses
-[syncCollectionToObsidian](../../application/sync-collection-to-obsidian.ts).
-After persistence and Task 018's per-collection membership reconciliation, Task 017's shared
-[readObsidianSnapshot](../../application/read-obsidian-snapshot.ts) completes item,
-collection, and membership reads before [exportObsidianProjection](export-projection.ts)
-starts output. The pure [projection builder](collection-projection.ts) rejects
-duplicate identities/edges and missing parents before any writes. Sequential reads
-assume a local manual writer; they do not provide cross-process snapshot isolation.
-A relationship-write failure skips export; output failures retain completed database
-writes. The generic `syncToObsidian` API remains item-only and unchanged.
+The identity token is unpadded base64url of UTF-8
+`JSON.stringify([kind, source, sourceId])`. It retains the full original strings.
+The SHA-256 fingerprint covers **every other byte**: concatenate bytes before
+and after the 64 ASCII digest characters, excluding those characters only.
+The field name, quotes, newline, all ownership data, ordinary frontmatter and
+body are included. Generation uses UTF-8 without BOM and canonical LF.
 
-SQLite collections and memberships are authoritative for observed playlist
-associations. Item Markdown retains the legacy `KnowledgeItem.collection` title
-from the last synchronized playlist. Collection notes join only complete source/ID
-identities, never that title. Memberships are populated and reconciled by successful
-complete collection syncs; failed collections retain prior edges and additive progress.
-There is one note per item identity and one per collection identity.
+Verification never normalizes existing bytes. Missing/malformed markers,
+unknown versions, identity mismatches, CRLF conversion, invalid UTF-8 and content
+edits are rejected. The header grammar is deliberately limited to the exact
+three ownership lines above, followed by unique plain keys from
+`source`, `sourceId`, `url`, `title`, `author`, `collection`, `publishedAt`, each
+with a JSON-compatible quoted string scalar. Arbitrary YAML keys, escaped or
+quoted keys, aliases, explicit-key syntax, duplicate keys and additional fields
+are unsupported in v1. This rejects duplicate ownership even with a recomputed
+digest. Fingerprints detect accidental changes; they do not authenticate authors.
 
-[Collection paths](collection-path.ts) reuse the existing persistent encoder as
-`<encoded-source>/collections/<encoded-collection-id>.md`; titles do not affect paths.
-[Collection Markdown](collection-markdown.ts) preserves raw front-matter strings
-in source/sourceId/title order, escapes inline headings and labels, uses the
-projection builder's identity-sorted members, and ends with exactly one LF.
-An empty title's heading uses sourceId.
-[Link destinations](markdown-link.ts) URL-encode the literal relative path separately,
-including literal percent signs, and preserve `/` separators. Empty collections
-contain `_No items._`. Existing item paths and Markdown bytes are unchanged.
+Root navigation remains an explicit exception: its existing first-line marker
+`<!-- knowledge-sync:generated-navigation:v1 -->` authorizes replacement, with
+one optional BOM and LF/CRLF/EOF accepted. Its body has no content fingerprint,
+so user edits below that marker can be replaced.
 
-The projection exports items first, then collections. Individual failures retain
-the original entity/error and allow later writes, including collection writes after
-item failures. Unexpected item-batch exceptions stop the collection phase; unexpected
-collection-batch exceptions retain completed item results and the original error in
-an explicit tagged outcome, including thrown `undefined`. Both CLI commands report
-separate counts and fail if either phase fails. A later run attempts all notes again.
-Collection links may reference failed item writes until a successful rerun.
+## Preflight and publication
 
-An empty playlist now creates a collection note, so a nonexistent vault causes an
-export failure. A completely empty projection still performs no filesystem access.
-There is no stale-file deletion or export-state tracking in the output layer;
-existing generated notes are overwritten with the writer's non-atomic semantics.
-Reconciled SQLite memberships disappear from collection links during normal export.
-Items with no memberships and their notes remain. Output failure leaves reconciliation
-committed, so a later successful export recovers the collection projection.
+[preflightObsidianPlan](preflight.ts) performs no writes. It validates all expected
+paths, portable equivalent existing names, ancestors including vault ancestors,
+regular-file targets and ownership. Symlinks/junctions block export. A root
+navigation conflict blocks notes too. Missing generated subdirectories are only
+created after successful global preflight. Possible leftovers are counted only
+in planned source/collection directories by listing names and using `lstat`;
+unknown files are not read or claimed as generated.
 
-Task 016's [syncAccount](../../application/sync-account.ts) now optionally invokes
-the same full projection once after all playlists. Recoverable playlist
-failures do not suppress that export, including when all playlists fail or
-discovery returns no playlists. Fatal account errors skip export. Snapshot and
-unexpected batch exceptions are retained alongside the accumulated playlist
-results, while individual note failures keep the existing batch result semantics.
-The selected database's entire item/collection/membership snapshot is the projection
-source; completed item results also survive unexpected collection-batch exceptions.
+[exportObsidianPlan](export-projection.ts) rechecks preflight, publishes all items,
+then collections only if every item succeeded, then root navigation only if every
+collection succeeded. Phase results preserve original failures and explicitly
+mark dependent phases skipped. Identical bytes are not rewritten. Empty snapshots
+are no-ops, preserving any existing navigation page.
 
-Task 020 extends the shared projection with a root `Knowledge Sync.md` page.
-[renderNavigationMarkdown](navigation-markdown.ts) is pure and uses the validated
-snapshot's items and collections, including retained/unassociated items exactly
-once. It normalizes display titles (NFC, existing control conversion, whitespace
-collapse), supplies empty-title fallbacks, and sorts by display title plus raw
-source/ID. Duplicate titles get escaped identity suffixes. Canonical path builders
-and separate Markdown destination encoding preserve existing paths and note bytes.
+[writeGeneratedObsidianNote](write-generated-note.ts) verifies the full identity
+and fingerprint, prepares an exclusively created sibling temporary file, closes
+it, rechecks ancestors/ownership/previous bytes and renames into place. It never
+unlinks the canonical target to retry. Failure cleanup touches only its own temp
+file; interrupted-run orphans remain. Navigation retains its tested atomic writer
+with all-source path checks immediately before replacement.
 
-[writeNavigationNote](write-navigation.ts) accepts only complete generated content
-and a fixed target filename. `lstat` rejects directories and symlinks, including
-dangling links. Replacement requires the exact first-line ownership marker
-`<!-- knowledge-sync:generated-navigation:v1 -->`, optionally preceded by one BOM
-and followed by LF, CRLF, or EOF. Other regular files are preserved.
-An exclusively created sibling temporary file is fully written and closed before
-the destination is rechecked and replaced with `rename`. No canonical truncation,
-delete-then-rename fallback, or broad temporary cleanup is used. Preparation and
-replacement failures retain the previous page and original error. Only the current
-invocation's temporary file is eligible for cleanup. Abrupt termination or cleanup
-failure may leave an orphan; a later run preserves it and uses a new name.
+One writer and no concurrent external filesystem or database changes are assumed.
+Preflight-to-open and check-to-rename races remain; rechecks are not locks. There
+is no transaction spanning SQLite and the vault or the whole set of files, and
+no universal power-loss guarantee. Partial successful publication remains for
+retry. There is no cleanup phase: historical/modified/unknown files and user
+backlinks remain untouched. Title changes leave old paths alongside new ones.
 
-This writer assumes one active writer with no external edits to the vault root,
-target, or temporary file. The recheck is not a lock and leaves TOCTOU races; no
-general ancestor/reparse-point hardening or universal power-loss durability is
-claimed. Generated page edits can be replaced. Byte stability does not imply
-unchanged modification times or ACL preservation.
+## Integration
 
-The projection returns a required `navigation` outcome: `completed`, `failed`
-with `render`/`write` stage and original error, or `skipped` with `empty-snapshot`
-or `upstream-failure` reason. Both normal batches complete before one navigation
-attempt, including after individual note failures. Unexpected item-batch errors
-still propagate; collection-batch errors retain completed item results and skip
-navigation. A valid fully empty snapshot skips rendering and filesystem access,
-leaving previous navigation untouched. Failed notes can leave unresolved links.
-Both affected application operations retain these outcomes; both export CLIs
-print a separate navigation summary and exit nonzero on navigation failure.
-An account export without `--vault` retains `not-requested` without navigation.
-The generic item-only APIs remain unchanged.
+The [storage snapshot](../../storage/sqlite/read-snapshot.ts) validates rows,
+original identity byte encoding and relationships in one synchronous transaction.
+[Export-only reading](../../storage/sqlite/read-only-snapshot.ts) adds conservative
+existing-file/header/sidecar preflight, rejects WAL/journal states, opens strictly
+read-only with memory temporary storage, and closes on every outcome. It performs
+no bootstrap, checkpoint, recovery, repair or source/network access.
 
-Task 021 routes Facebook items and collections through the shared
-[owned writer](write-owned-note.ts), including when a YouTube command exports a
-mixed-source SQLite snapshot. Paths remain unchanged. The first YAML field,
-`knowledge_sync`, contains a quoted JSON ownership record with version 1, entity
-kind (`item` or `collection`), source, and complete source ID. Existing files must
-match that exact generated prefix before replacement; unmarked files, wrong
-versions, other identities and other entity kinds are preserved.
+YouTube single-playlist/account sync and Facebook import share the same planner
+and publisher. The [item batch](export-notes.ts) and
+[collection batch](export-collections.ts) use thin plan adapters, suppressing root
+navigation; collection-only export also suppresses item publication. Their error
+indexes follow deterministic plan order. Duplicate identities fail preflight.
+The older [item-only application](../../application/sync-to-obsidian.ts) remains
+item-only. Single-item/collection wrappers use the same readable paths, sealed
+rendering and verified writer.
 
-The writer checks every existing directory component from the filesystem root
-through the vault and destination parent with `lstat`, rejecting symlinks,
-Windows junctions, and non-directories. Missing parents below an existing vault
-are created individually and checked again. The target must be absent or a
-regular owned file. An exclusively created sibling temporary file is written and
-closed before directories and ownership are rechecked, then renamed into place.
-No destructive replacement fallback exists. Preparation/rename failures preserve
-old canonical bytes; cleanup touches only this invocation's temporary file.
-Orphans from interrupted runs or failed cleanup are left alone. As with
-navigation, one writer and no concurrent external filesystem mutation are
-assumed; rechecks are not locks and do not promise power-loss durability.
-
-[Facebook rendering](facebook-safety.ts) encodes ASCII punctuation as character
-references in body text, collection headings, and link labels, including shared
-navigation labels. This keeps HTML, Markdown links, Obsidian embeds, math,
-highlights, and block references literal. Frontmatter retains quoted values;
-source URLs are not fetched or rewritten. Mixed snapshots also validate vault
-ancestors before writing navigation. Existing YouTube bytes and filenames are
-unchanged. Shared CLI failure formatting reports Facebook indexes and fixed
-reasons without private identities or source content.
+The legacy [opaque writer](write-note.ts) and [old prefix writer](write-owned-note.ts)
+remain as existing low-level APIs, but production generated exports no longer
+use their legacy overwrite/ownership contracts. No new dependencies, schema,
+import records, source identities, network integration or Git automation are added.
